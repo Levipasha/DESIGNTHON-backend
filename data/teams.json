@@ -1,0 +1,33 @@
+[
+  {
+    "name": "Figma Wizards",
+    "description": "Creating minimalist Figma designs with micro-interactions and sleek prototypes.",
+    "college": "VNR Vignana Jyothi",
+    "leaderId": "zuc6wc09a",
+    "members": [
+      "zuc6wc09a"
+    ],
+    "remainingSlots": 3,
+    "status": "open",
+    "inviteLink": "http://localhost:3000/teams/join?teamId=figma-wizards",
+    "joinRequests": [],
+    "createdAt": "2026-07-11T04:55:30.286Z",
+    "id": "h1gwdiayx"
+  },
+  {
+    "name": "Pixel Perfect",
+    "description": "Design components modeled after linear.app and Apple interfaces. Ready to code.",
+    "college": "JNTUH",
+    "leaderId": "z89trnyuc",
+    "members": [
+      "z89trnyuc",
+      "prprpk142"
+    ],
+    "remainingSlots": 2,
+    "status": "open",
+    "inviteLink": "http://localhost:3000/teams/join?teamId=pixel-perfect",
+    "joinRequests": [],
+    "createdAt": "2026-07-11T04:55:30.289Z",
+    "id": "9e9fuxne7"
+  }
+]

@@ -1,0 +1,37 @@
+[
+  {
+    "code": "JNTUH50",
+    "discountType": "percentage",
+    "discountValue": 50,
+    "collegeName": "JNTUH",
+    "usageLimit": 50,
+    "usageCount": 0,
+    "expiryDate": "2026-12-31",
+    "isActive": true,
+    "createdAt": "2026-07-11T04:55:30.282Z",
+    "id": "3igkdpf0o"
+  },
+  {
+    "code": "VNR20",
+    "discountType": "percentage",
+    "discountValue": 20,
+    "usageLimit": 100,
+    "usageCount": 0,
+    "expiryDate": "2026-12-31",
+    "isActive": true,
+    "createdAt": "2026-07-11T04:55:30.283Z",
+    "id": "lf8cm2y7j"
+  },
+  {
+    "code": "MGIT100",
+    "discountType": "percentage",
+    "discountValue": 100,
+    "collegeName": "MGIT",
+    "usageLimit": 10,
+    "usageCount": 0,
+    "expiryDate": "2026-12-31",
+    "isActive": true,
+    "createdAt": "2026-07-11T04:55:30.284Z",
+    "id": "pyq1csisn"
+  }
+]
