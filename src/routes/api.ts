@@ -314,7 +314,7 @@ router.post('/coupons/validate', async (req: Request, res: Response) => {
     }
   }
 
-  const basePrice = 750;
+  const basePrice = 1000;
   let discountAmount = 0;
 
   if (coupon.discountType === 'percentage') {
@@ -418,7 +418,7 @@ router.post('/payments/verify', authenticateToken, async (req: AuthRequest, res:
     userId: user.id,
     userName: user.name,
     userEmail: user.email,
-    amount: amount || 750,
+    amount: amount || 1000,
     status: 'success',
     couponUsed: couponCode,
     createdAt: new Date().toISOString()
@@ -437,7 +437,7 @@ router.post('/payments/verify', authenticateToken, async (req: AuthRequest, res:
     paymentStatus: 'paid',
     paymentId: paymentLog.razorpayPaymentId,
     couponUsed: couponCode || undefined,
-    amountPaid: amount || 750
+    amountPaid: amount || 1000
   });
 
   // Create real-time notification
@@ -445,7 +445,7 @@ router.post('/payments/verify', authenticateToken, async (req: AuthRequest, res:
     recipientType: 'individual',
     recipientTarget: user.id,
     title: 'Payment Successful',
-    message: `Thank you, ${user.name}! Your payment of ₹${amount || 750} has been processed successfully. You are now registered.`,
+    message: `Thank you, ${user.name}! Your payment of ₹${amount || 1000} has been processed successfully. You are now registered.`,
     type: 'success',
     readBy: [],
     createdAt: new Date().toISOString()
