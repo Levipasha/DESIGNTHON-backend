@@ -11,17 +11,54 @@ const dotenv_1 = __importDefault(require("dotenv"));
 const api_1 = __importDefault(require("./routes/api"));
 const db_1 = require("./config/db");
 dotenv_1.default.config();
+const allowedOrigins = process.env.FRONTEND_URL
+    ? process.env.FRONTEND_URL.split(',').map((o) => o.trim())
+    : [
+        'http://localhost:3000',
+        'http://127.0.0.1:3000',
+        'http://localhost:5173',
+        'http://localhost:5174',
+        'https://designthon.skywebdev.xyz'
+    ];
 const app = (0, express_1.default)();
 const server = http_1.default.createServer(app);
 const io = new socket_io_1.Server(server, {
     cors: {
-        origin: ['http://localhost:3000', 'http://127.0.0.1:3000'],
+        origin: (origin, callback) => {
+            if (!origin)
+                return callback(null, true);
+            if (process.env.FRONTEND_URL) {
+                if (allowedOrigins.indexOf(origin) !== -1) {
+                    callback(null, true);
+                }
+                else {
+                    callback(new Error('Not allowed by CORS'));
+                }
+            }
+            else {
+                callback(null, true);
+            }
+        },
         methods: ['GET', 'POST', 'PUT', 'DELETE'],
         credentials: true
     }
 });
 app.use((0, cors_1.default)({
-    origin: ['http://localhost:3000', 'http://127.0.0.1:3000'],
+    origin: (origin, callback) => {
+        if (!origin)
+            return callback(null, true);
+        if (process.env.FRONTEND_URL) {
+            if (allowedOrigins.indexOf(origin) !== -1) {
+                callback(null, true);
+            }
+            else {
+                callback(new Error('Not allowed by CORS'));
+            }
+        }
+        else {
+            callback(null, true);
+        }
+    },
     credentials: true
 }));
 app.use(express_1.default.json());

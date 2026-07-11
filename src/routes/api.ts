@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { v4 as uuidv4 } from 'uuid';
+import crypto from 'crypto';
 import { 
   Users, Teams, Coupons, Notifications, Payments, Invites,
   User, Team, Coupon, Notification, PaymentLog, TeamInvite
@@ -337,26 +338,74 @@ router.post('/coupons/validate', async (req: Request, res: Response) => {
 
 // --- PAYMENTS & REGISTRATION MOCKS ---
 
-// 1. Create Order (Simulator config)
+// 1. Create Order (Real Razorpay integration)
 router.post('/payments/create-order', authenticateToken, async (req: AuthRequest, res: Response) => {
   const { amount } = req.body;
   if (!amount) return res.status(400).json({ message: 'Amount is required' });
 
-  // Generate order ID
-  const orderId = `order_${uuidv4().substring(0, 14)}`;
-  return res.json({
-    id: orderId,
-    currency: 'INR',
-    amount: amount * 100, // Razorpay works in paise
-  });
+  try {
+    const keyId = process.env.key_id;
+    const keySecret = process.env.key_secret;
+
+    if (!keyId || !keySecret) {
+      return res.status(500).json({ message: 'Razorpay API credentials are not configured on the backend' });
+    }
+
+    const response = await fetch('https://api.razorpay.com/v1/orders', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Basic ' + Buffer.from(`${keyId}:${keySecret}`).toString('base64')
+      },
+      body: JSON.stringify({
+        amount: Math.round(amount * 100), // Razorpay works in paise
+        currency: 'INR',
+        receipt: `receipt_${uuidv4().substring(0, 14)}`
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      console.error('Razorpay order creation error:', errorData);
+      return res.status(500).json({ message: 'Failed to create order with Razorpay', error: errorData });
+    }
+
+    const order: any = await response.json();
+    return res.json({
+      id: order.id,
+      currency: order.currency,
+      amount: order.amount,
+    });
+  } catch (error: any) {
+    console.error('Error creating Razorpay order:', error);
+    return res.status(500).json({ message: 'Internal server error while creating payment order', error: error.message });
+  }
 });
 
-// 2. Capture and Verify Payment (Real/Mock wrapper)
+// 2. Capture and Verify Payment (Real Razorpay Verification)
 router.post('/payments/verify', authenticateToken, async (req: AuthRequest, res: Response) => {
-  const { razorpay_payment_id, razorpay_order_id, couponCode, amount } = req.body;
+  const { razorpay_payment_id, razorpay_order_id, razorpay_signature, couponCode, amount } = req.body;
   const userId = req.user?.id;
 
   if (!userId) return res.status(401).json({ message: 'Unauthorized' });
+  if (!razorpay_payment_id || !razorpay_order_id || !razorpay_signature) {
+    return res.status(400).json({ message: 'Missing required Razorpay payment verification parameters' });
+  }
+
+  // Verify Razorpay signature
+  const keySecret = process.env.key_secret;
+  if (!keySecret) {
+    return res.status(500).json({ message: 'Razorpay secret key is not configured on the backend' });
+  }
+
+  const generated_signature = crypto
+    .createHmac('sha256', keySecret)
+    .update(`${razorpay_order_id}|${razorpay_payment_id}`)
+    .digest('hex');
+
+  if (generated_signature !== razorpay_signature) {
+    return res.status(400).json({ message: 'Payment verification failed: Signature mismatch' });
+  }
 
   // Update User Payment Status
   const user = await Users.findOne({ id: userId });
@@ -364,8 +413,8 @@ router.post('/payments/verify', authenticateToken, async (req: AuthRequest, res:
 
   // Log the payment
   const paymentLog = await Payments.create({
-    razorpayPaymentId: razorpay_payment_id || `pay_${uuidv4().substring(0, 14)}`,
-    razorpayOrderId: razorpay_order_id || `order_${uuidv4().substring(0, 14)}`,
+    razorpayPaymentId: razorpay_payment_id,
+    razorpayOrderId: razorpay_order_id,
     userId: user.id,
     userName: user.name,
     userEmail: user.email,
