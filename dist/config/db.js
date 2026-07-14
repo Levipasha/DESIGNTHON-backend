@@ -95,6 +95,7 @@ async function seedDatabase() {
     const adminExists = await exports.Users.findOne({ email: 'admin@designthon.com' });
     if (!adminExists) {
         await exports.Users.create({
+            id: 'wmrq5bwm9',
             name: 'Designthon Admin', email: 'admin@designthon.com', phone: '9999999999',
             college: 'DESIGNTHON Core', branch: 'Administration', year: 'N/A', gender: 'Other',
             linkedin: 'https://linkedin.com', role: 'admin', paymentStatus: 'paid',
@@ -102,25 +103,17 @@ async function seedDatabase() {
         });
         console.log('[DB] Admin user seeded.');
     }
-    const couponsCount = await exports.Coupons.count();
-    if (couponsCount === 0) {
-        const now = new Date().toISOString();
-        await exports.Coupons.create({ code: 'JNTUH50', discountType: 'percentage', discountValue: 50, collegeName: 'JNTUH', usageLimit: 50, usageCount: 0, expiryDate: '2026-12-31', isActive: true, createdAt: now });
-        await exports.Coupons.create({ code: 'VNR20', discountType: 'percentage', discountValue: 20, usageLimit: 100, usageCount: 0, expiryDate: '2026-12-31', isActive: true, createdAt: now });
-        await exports.Coupons.create({ code: 'MGIT100', discountType: 'percentage', discountValue: 100, collegeName: 'MGIT', usageLimit: 10, usageCount: 0, expiryDate: '2026-12-31', isActive: true, createdAt: now });
-        console.log('[DB] Coupons seeded.');
+    const couponsToSeed = [
+        { code: 'JNTUH50', discountType: 'percentage', discountValue: 50, collegeName: 'JNTUH', usageLimit: 50, usageCount: 0, expiryDate: '2026-12-31', isActive: true },
+        { code: 'VNR20', discountType: 'percentage', discountValue: 20, usageLimit: 100, usageCount: 0, expiryDate: '2026-12-31', isActive: true },
+        { code: 'MGIT100', discountType: 'percentage', discountValue: 100, collegeName: 'MGIT', usageLimit: 10, usageCount: 0, expiryDate: '2026-12-31', isActive: true }
+    ];
+    for (const c of couponsToSeed) {
+        const exists = await exports.Coupons.findOne({ code: c.code });
+        if (!exists) {
+            await exports.Coupons.create({ ...c, createdAt: new Date().toISOString() });
+        }
     }
-    const teamsCount = await exports.Teams.count();
-    if (teamsCount === 0) {
-        const now = new Date().toISOString();
-        const leader1 = await exports.Users.create({ name: 'Rohit Sharma', email: 'rohit@vnr.edu', phone: '8888888888', college: 'VNR Vignana Jyothi', branch: 'CSE', year: '3rd Year', gender: 'Male', linkedin: 'https://linkedin.com', role: 'team-leader', paymentStatus: 'paid', amountPaid: 800, checkedIn: true, createdAt: now });
-        const team1 = await exports.Teams.create({ name: 'Figma Wizards', description: 'Creating minimalist Figma designs with micro-interactions.', college: 'VNR Vignana Jyothi', leaderId: leader1.id, members: [leader1.id], remainingSlots: 3, status: 'open', inviteLink: 'http://localhost:3000/teams/join?teamId=figma-wizards', joinRequests: [], createdAt: now });
-        await exports.Users.updateOne(leader1.id, { teamId: team1.id, teamRole: 'leader' });
-        const leader2 = await exports.Users.create({ name: 'Aditi Rao', email: 'aditi@jntuh.ac.in', phone: '7777777777', college: 'JNTUH', branch: 'IT', year: '4th Year', gender: 'Female', linkedin: 'https://linkedin.com', role: 'team-leader', paymentStatus: 'paid', amountPaid: 500, checkedIn: false, createdAt: now });
-        const member2 = await exports.Users.create({ name: 'Karthik S', email: 'karthik@jntuh.ac.in', phone: '7777777778', college: 'JNTUH', branch: 'ECE', year: '4th Year', gender: 'Male', linkedin: 'https://linkedin.com', role: 'participant', paymentStatus: 'paid', amountPaid: 500, checkedIn: false, createdAt: now });
-        const team2 = await exports.Teams.create({ name: 'Pixel Perfect', description: 'Design components modeled after linear.app and Apple interfaces.', college: 'JNTUH', leaderId: leader2.id, members: [leader2.id, member2.id], remainingSlots: 2, status: 'open', inviteLink: 'http://localhost:3000/teams/join?teamId=pixel-perfect', joinRequests: [], createdAt: now });
-        await exports.Users.updateOne(leader2.id, { teamId: team2.id, teamRole: 'leader' });
-        await exports.Users.updateOne(member2.id, { teamId: team2.id, teamRole: 'member' });
-        console.log('[DB] Mock teams seeded.');
-    }
+    console.log('[DB] Coupons seeding check completed.');
+    // Seeding of mock teams and users has been removed to keep the database clean from fake data.
 }
