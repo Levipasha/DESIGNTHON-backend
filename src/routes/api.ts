@@ -6,6 +6,7 @@ import {
   Users, Teams, Coupons, Notifications, Payments, Invites,
   User, Team, Coupon, Notification, PaymentLog, TeamInvite
 } from '../config/db';
+import { sendEmail, getEmailTemplate } from '../config/mail';
 
 const router = Router();
 const JWT_SECRET = process.env.JWT_SECRET || 'designthon-secret-key-2026';
@@ -279,6 +280,20 @@ router.get('/public/colleges', async (req: Request, res: Response) => {
   return res.json(Array.from(collegesSet));
 });
 
+// 2.5 Get details of a single team by ID
+router.get('/public/teams/:id', async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const team = await Teams.findOne({ id });
+  if (!team) return res.status(404).json({ message: 'Team not found' });
+
+  const leader = await Users.findOne({ id: team.leaderId });
+  return res.json({
+    ...team,
+    leaderName: leader ? leader.name : 'Unknown Leader',
+    memberCount: team.members.length
+  });
+});
+
 
 // --- COUPONS ---
 
@@ -451,6 +466,63 @@ router.post('/payments/verify', authenticateToken, async (req: AuthRequest, res:
     createdAt: new Date().toISOString()
   });
 
+  // Send email confirmation
+  try {
+    const origin = req.get('origin') || 'http://localhost:3000';
+    const ticketHtml = `
+      <p>Hello <strong>${user.name}</strong>,</p>
+      <p>Your registration payment has been verified. Here is your entry pass and receipt details:</p>
+      
+      <div class="ticket-card">
+        <div class="ticket-header">ENTRY PASS & RECEIPT</div>
+        <div class="ticket-row">
+          <span class="ticket-label">Attendee Name</span>
+          <span class="ticket-value">${user.name}</span>
+        </div>
+        <div class="ticket-row">
+          <span class="ticket-label">Email Address</span>
+          <span class="ticket-value">${user.email}</span>
+        </div>
+        <div class="ticket-row">
+          <span class="ticket-label">College</span>
+          <span class="ticket-value">${user.college}</span>
+        </div>
+        <div class="ticket-row">
+          <span class="ticket-label">Transaction ID</span>
+          <span class="ticket-value" style="font-family: monospace;">${paymentLog.razorpayPaymentId}</span>
+        </div>
+        ${couponCode ? `
+        <div class="ticket-row">
+          <span class="ticket-label">Coupon Applied</span>
+          <span class="ticket-value">${couponCode}</span>
+        </div>` : ''}
+        <div class="ticket-row ticket-total">
+          <span>Amount Paid</span>
+          <span>₹${amount || 1000}</span>
+        </div>
+        
+        <div class="qr-container">
+          <p style="margin-bottom: 10px; font-size: 11px; color: #71717a;">SCAN FOR CHECK-IN</p>
+          <img src="https://quickchart.io/qr?text=${encodeURIComponent(user.id)}&size=120&margin=1" class="qr-img" alt="Entry QR" />
+        </div>
+      </div>
+
+      <p><strong>Next Steps:</strong></p>
+      <ul>
+        <li>Log in to your dashboard to create or join a team (teams require 3-4 members).</li>
+        <li>Present the QR code above at the venue check-in desk on Saturday, Sept 12, 2026.</li>
+      </ul>
+      
+      <div class="cta-container">
+        <a href="${origin}/login" class="cta-button">Go to Dashboard</a>
+      </div>
+    `;
+    const mailHtml = getEmailTemplate('Registration Confirmed!', ticketHtml);
+    await sendEmail(user.email, 'DESIGNTHON 2026 - Registration Confirmed', mailHtml);
+  } catch (mailErr) {
+    console.error('[Mail Error] Failed to send payment confirmation email:', mailErr);
+  }
+
   const updatedUser = await Users.findOne({ id: user.id });
   return res.json({ success: true, message: 'Payment completed successfully', user: updatedUser });
 });
@@ -478,6 +550,7 @@ router.post('/teams/create', authenticateToken, async (req: AuthRequest, res: Re
 
   const teamId = name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '') + `-${Math.random().toString(36).substring(2, 6)}`;
   
+  const origin = req.get('origin') || 'http://localhost:3000';
   const team = await Teams.create({
     id: teamId,
     name,
@@ -488,7 +561,7 @@ router.post('/teams/create', authenticateToken, async (req: AuthRequest, res: Re
     members: [user.id],
     remainingSlots: 3, // Team of max 4
     status: 'open',
-    inviteLink: `http://localhost:3000/teams/join?teamId=${teamId}`,
+    inviteLink: `${origin}/teams/join?teamId=${teamId}`,
     joinRequests: [],
     createdAt: new Date().toISOString()
   });
@@ -555,6 +628,47 @@ router.post('/teams/join-request', authenticateToken, async (req: AuthRequest, r
     readBy: [],
     createdAt: new Date().toISOString()
   });
+
+  // Send email to Team Leader
+  try {
+    const leader = await Users.findOne({ id: team.leaderId });
+    if (leader) {
+      const requestHtml = `
+        <p>Hello <strong>${leader.name}</strong>,</p>
+        <p>A participant has requested to join your team <strong>"${team.name}"</strong>:</p>
+        
+        <div class="ticket-card">
+          <div class="ticket-header">JOIN REQUEST DETAILS</div>
+          <div class="ticket-row">
+            <span class="ticket-label">Name</span>
+            <span class="ticket-value">${user.name}</span>
+          </div>
+          <div class="ticket-row">
+            <span class="ticket-label">College</span>
+            <span class="ticket-value">${user.college}</span>
+          </div>
+          <div class="ticket-row">
+            <span class="ticket-label">Branch & Year</span>
+            <span class="ticket-value">${user.branch} (${user.year})</span>
+          </div>
+          <div class="ticket-row">
+            <span class="ticket-label">LinkedIn</span>
+            <span class="ticket-value"><a href="${user.linkedin}" style="color: #a78bfa; text-decoration: none;">View LinkedIn</a></span>
+          </div>
+        </div>
+        
+        <p>Log in to your dashboard to approve or decline this join request.</p>
+        
+        <div class="cta-container">
+          <a href="${req.get('origin') || 'http://localhost:3000'}/login" class="cta-button">Go to Dashboard</a>
+        </div>
+      `;
+      const mailHtml = getEmailTemplate('New Join Request Received!', requestHtml);
+      await sendEmail(leader.email, `DESIGNTHON 2026 - Join Request from ${user.name}`, mailHtml);
+    }
+  } catch (mailErr) {
+    console.error('[Mail Error] Failed to send join request email to leader:', mailErr);
+  }
 
   return res.json({ success: true, message: 'Request sent to team leader' });
 });
@@ -627,6 +741,26 @@ router.post('/teams/respond-request', authenticateToken, async (req: AuthRequest
       createdAt: new Date().toISOString()
     });
 
+    // Notify applicant via email
+    try {
+      const applicant = await Users.findOne({ id: requestUserId });
+      if (applicant) {
+        const approvedHtml = `
+          <p>Hello <strong>${applicant.name}</strong>,</p>
+          <p>Congratulations! Your request to join team <strong>"${team.name}"</strong> has been <strong>approved</strong> by the team leader.</p>
+          <p>You can now access your team management dashboard to invite other members, prepare your deliverables, and start planning.</p>
+          
+          <div class="cta-container">
+            <a href="${req.get('origin') || 'http://localhost:3000'}/login" class="cta-button">Go to Dashboard</a>
+          </div>
+        `;
+        const mailHtml = getEmailTemplate('Join Request Approved!', approvedHtml);
+        await sendEmail(applicant.email, `DESIGNTHON 2026 - Join Request Approved for ${team.name}`, mailHtml);
+      }
+    } catch (mailErr) {
+      console.error('[Mail Error] Failed to send approved email notification:', mailErr);
+    }
+
   } else {
     // Reject
     const updatedRequests = team.joinRequests.map(r => 
@@ -645,6 +779,26 @@ router.post('/teams/respond-request', authenticateToken, async (req: AuthRequest
       readBy: [],
       createdAt: new Date().toISOString()
     });
+
+    // Notify applicant via email
+    try {
+      const applicant = await Users.findOne({ id: requestUserId });
+      if (applicant) {
+        const rejectedHtml = `
+          <p>Hello <strong>${applicant.name}</strong>,</p>
+          <p>Your request to join team <strong>"${team.name}"</strong> was declined.</p>
+          <p>Don't worry! You can browse other open teams looking for members, or create your own team and invite others.</p>
+          
+          <div class="cta-container">
+            <a href="${req.get('origin') || 'http://localhost:3000'}/teams" class="cta-button">Browse Other Teams</a>
+          </div>
+        `;
+        const mailHtml = getEmailTemplate('Join Request Update', rejectedHtml);
+        await sendEmail(applicant.email, `DESIGNTHON 2026 - Join Request Update`, mailHtml);
+      }
+    } catch (mailErr) {
+      console.error('[Mail Error] Failed to send rejected email notification:', mailErr);
+    }
   }
 
   const updatedTeam = await Teams.findOne({ id: team.id });
@@ -970,6 +1124,33 @@ router.post('/admin/notifications/send', authenticateToken, requireAdmin, async 
     createdAt: new Date().toISOString()
   });
 
+  // Send email if channel is email or unspecified
+  if (!channel || channel === 'email') {
+    try {
+      const allUsers = await Users.find();
+      const targetUsers = allUsers.filter(u => {
+        if (u.role === 'admin') return false; // Don't broadcast to admin
+        if (recipientType === 'all') return true;
+        if (recipientType === 'college' && recipientTarget && u.college.toLowerCase() === recipientTarget.toLowerCase()) return true;
+        if (recipientType === 'team' && recipientTarget && u.teamId === recipientTarget) return true;
+        if (recipientType === 'individual' && recipientTarget && u.id === recipientTarget) return true;
+        return false;
+      });
+
+      // Send to all targets
+      for (const u of targetUsers) {
+        const broadcastHtml = `
+          <p>Hello <strong>${u.name}</strong>,</p>
+          <p>${message}</p>
+        `;
+        const mailHtml = getEmailTemplate(title, broadcastHtml);
+        await sendEmail(u.email, title, mailHtml);
+      }
+    } catch (mailErr) {
+      console.error('[Mail Error] Failed to send broadcast email:', mailErr);
+    }
+  }
+
   // Simulated email/sms sending logs
   console.log(`[BROADCAST via ${channel || 'email'}] Target: ${recipientType} (${recipientTarget || 'ALL'}). Message: ${message}`);
 
@@ -1089,6 +1270,30 @@ router.post('/teams/invite', authenticateToken, async (req: AuthRequest, res: Re
     });
   }
 
+  // Send email invitation
+  try {
+    const origin = req.get('origin') || 'http://localhost:3000';
+    const inviteLink = `${origin}/teams/join?teamId=${team.id}`;
+    const inviteHtml = `
+      <p>Hello,</p>
+      <p>You have been invited by <strong>${leader.name}</strong> to join their team <strong>"${team.name}"</strong> for <strong>DESIGNTHON 2026</strong>.</p>
+      
+      <div class="ticket-card" style="text-align: center; padding: 25px;">
+        <h3 style="color: #ffffff; margin-top: 0;">TEAM INVITATION</h3>
+        <p style="font-size: 13px; color: #a1a1aa; margin-bottom: 20px;">
+          You're invited to join <strong>${team.name}</strong> (${team.college}) as a team member.
+        </p>
+        <a href="${inviteLink}" class="cta-button" style="display: inline-block;">Accept Invite & Join</a>
+      </div>
+      
+      <p>Please note: every member must complete individual registration and payment before joining a team.</p>
+    `;
+    const mailHtml = getEmailTemplate('Team Invitation Received!', inviteHtml);
+    await sendEmail(inviteeEmail.toLowerCase(), `DESIGNTHON 2026 - Team Invitation from ${leader.name}`, mailHtml);
+  } catch (mailErr) {
+    console.error('[Mail Error] Failed to send team invite email:', mailErr);
+  }
+
   return res.json({ success: true, invite });
 });
 
@@ -1159,6 +1364,26 @@ router.post('/teams/invite-respond', authenticateToken, async (req: AuthRequest,
     readBy: [],
     createdAt: new Date().toISOString()
   });
+
+  // Notify leader via email
+  try {
+    const leader = await Users.findOne({ id: invite.leaderId });
+    if (leader) {
+      const acceptHtml = `
+        <p>Hello <strong>${leader.name}</strong>,</p>
+        <p>Great news! <strong>${user.name}</strong> has accepted your invitation and joined your team <strong>"${team.name}"</strong>.</p>
+        <p>You can view your updated team roster on your dashboard.</p>
+        
+        <div class="cta-container">
+          <a href="${req.get('origin') || 'http://localhost:3000'}/login" class="cta-button">Go to Dashboard</a>
+        </div>
+      `;
+      const mailHtml = getEmailTemplate('Invitation Accepted!', acceptHtml);
+      await sendEmail(leader.email, `DESIGNTHON 2026 - ${user.name} joined your team`, mailHtml);
+    }
+  } catch (mailErr) {
+    console.error('[Mail Error] Failed to send invite acceptance email to leader:', mailErr);
+  }
 
   const updatedUser = await Users.findOne({ id: userId });
   return res.json({ success: true, message: 'You have joined the team!', user: updatedUser });
