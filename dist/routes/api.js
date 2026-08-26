@@ -3,16 +3,45 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.requireAdmin = exports.authenticateToken = void 0;
+exports.getAdminRoleForEmail = exports.VIEWER_ADMIN_EMAILS = exports.FULL_ADMIN_EMAILS = exports.requireFullAdmin = exports.requireAdmin = exports.authenticateToken = exports.isConfirmedParticipant = exports.isRealParticipant = exports.HIDDEN_TEST_NAMES = exports.HIDDEN_TEST_EMAILS = void 0;
+exports.generateRegistrationId = generateRegistrationId;
 const express_1 = require("express");
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const uuid_1 = require("uuid");
 const crypto_1 = __importDefault(require("crypto"));
 const db_1 = require("../config/db");
 const mail_1 = require("../config/mail");
+const index_1 = require("../index");
 const router = (0, express_1.Router)();
 const JWT_SECRET = process.env.JWT_SECRET || 'designthon-secret-key-2026';
-// Authentication Middleware
+exports.HIDDEN_TEST_EMAILS = ['admin@retrend.com', 'admnklnklin@retrend.com', 'abbupasha61@gmail.com'];
+exports.HIDDEN_TEST_NAMES = ['p9uy87ghuoijpok opihguyftc', 'hjjjkkj', 'skyweb'];
+const isRealParticipant = (u) => {
+    if (u.role === 'admin')
+        return false;
+    const email = (u.email || '').toLowerCase().trim();
+    const name = (u.name || '').toLowerCase().trim();
+    if (exports.HIDDEN_TEST_EMAILS.includes(email) || exports.HIDDEN_TEST_NAMES.includes(name))
+        return false;
+    if (email.endsWith('@retrend.com'))
+        return false;
+    return true;
+};
+exports.isRealParticipant = isRealParticipant;
+const isConfirmedParticipant = (u) => {
+    if (!(0, exports.isRealParticipant)(u))
+        return false;
+    return u.paymentStatus === 'paid' || u.registrationStatus === 'CONFIRMED' || u.registrationStatus === 'PAYMENT_COMPLETED';
+};
+exports.isConfirmedParticipant = isConfirmedParticipant;
+function generateRegistrationId() {
+    const chars = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+    let code = '';
+    for (let i = 0; i < 6; i++) {
+        code += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return `DT26-${code}`;
+}
 const authenticateToken = async (req, res, next) => {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
@@ -23,7 +52,7 @@ const authenticateToken = async (req, res, next) => {
         const decoded = jsonwebtoken_1.default.verify(token, JWT_SECRET);
         let user;
         if (decoded.id === 'admin-local') {
-            user = { id: 'admin-local', role: 'admin' };
+            user = { id: 'admin-local', role: 'admin', adminRole: 'super-admin' };
         }
         else {
             user = await db_1.Users.findOne({ id: decoded.id });
@@ -31,7 +60,11 @@ const authenticateToken = async (req, res, next) => {
                 return res.status(404).json({ message: 'User not found' });
             }
         }
-        req.user = { id: user.id, role: user.role };
+        req.user = {
+            id: user.id,
+            role: user.role,
+            adminRole: user.adminRole || decoded.adminRole || 'super-admin'
+        };
         next();
     }
     catch (error) {
@@ -39,7 +72,7 @@ const authenticateToken = async (req, res, next) => {
     }
 };
 exports.authenticateToken = authenticateToken;
-// Admin Middleware
+// Admin Middleware (Viewers and Super Admins allowed)
 const requireAdmin = (req, res, next) => {
     if (!req.user || req.user.role !== 'admin') {
         return res.status(403).json({ message: 'Admin access required' });
@@ -47,7 +80,129 @@ const requireAdmin = (req, res, next) => {
     next();
 };
 exports.requireAdmin = requireAdmin;
-// --- AUTHENTICATION ENDPOINTS ---
+// Super Admin Middleware (Only Full Admins with Edit/Mutate permissions)
+const requireFullAdmin = async (req, res, next) => {
+    if (!req.user || req.user.role !== 'admin') {
+        return res.status(403).json({ message: 'Admin access required' });
+    }
+    let adminRole = req.user.adminRole;
+    if (!adminRole && req.user.id !== 'admin-local') {
+        const dbUser = await db_1.Users.findOne({ id: req.user.id });
+        if (dbUser)
+            adminRole = dbUser.adminRole;
+    }
+    if (adminRole === 'viewer') {
+        return res.status(403).json({
+            message: 'Access Denied: Read-only administrator accounts (Viewers) are not permitted to perform edit or modifying actions.'
+        });
+    }
+    next();
+};
+exports.requireFullAdmin = requireFullAdmin;
+// --- REGISTRATION & AUTHENTICATION ENDPOINTS ---
+// Phase 1 Registration: Save Participant Details & Generate Registration ID
+router.post('/register/phase1', async (req, res) => {
+    const { name, email, phone, college, branch, year, gender, linkedin, portfolio } = req.body;
+    // 1. Validate required fields
+    if (!name || !name.trim()) {
+        return res.status(400).json({ message: 'Full name is required' });
+    }
+    if (!email || !email.trim() || !/^\S+@\S+\.\S+$/.test(email.trim())) {
+        return res.status(400).json({ message: 'A valid email address is required' });
+    }
+    const cleanPhone = (phone || '').replace(/\D/g, '');
+    if (!cleanPhone || cleanPhone.length < 10) {
+        return res.status(400).json({ message: 'A valid 10-digit phone number is required' });
+    }
+    if (!college || !college.trim()) {
+        return res.status(400).json({ message: 'College/Organization name is required' });
+    }
+    if (!branch || !branch.trim()) {
+        return res.status(400).json({ message: 'Branch / Specialization is required' });
+    }
+    if (!year || !year.trim()) {
+        return res.status(400).json({ message: 'Current academic year is required' });
+    }
+    if (!gender || !gender.trim()) {
+        return res.status(400).json({ message: 'Gender is required' });
+    }
+    if (!linkedin || !linkedin.trim()) {
+        return res.status(400).json({ message: 'LinkedIn URL is required' });
+    }
+    const normalizedEmail = email.toLowerCase().trim();
+    let user = await db_1.Users.findOne({ email: normalizedEmail });
+    if (user) {
+        // If user has already paid / confirmed
+        if (user.paymentStatus === 'paid' || user.registrationStatus === 'CONFIRMED') {
+            const token = jsonwebtoken_1.default.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
+            return res.status(200).json({
+                alreadyConfirmed: true,
+                message: 'You have already completed registration & payment!',
+                token,
+                user,
+                registrationId: user.registrationId || user.id
+            });
+        }
+        // Existing pending user: update details, assign readable registrationId if missing
+        const regId = user.registrationId || generateRegistrationId();
+        await db_1.Users.updateOne(user.id, {
+            registrationId: regId,
+            name: name.trim(),
+            phone: cleanPhone,
+            college: college.trim(),
+            branch: branch.trim(),
+            year: year.trim(),
+            gender: gender.trim(),
+            linkedin: linkedin.trim(),
+            portfolio: portfolio ? portfolio.trim() : undefined,
+            registrationStatus: 'DETAILS_SUBMITTED',
+            currentPhase: 'PAYMENT',
+            originalAmount: 1000,
+            updatedAt: new Date().toISOString()
+        });
+        user = await db_1.Users.findOne({ id: user.id });
+    }
+    else {
+        // New participant registration record
+        const regId = generateRegistrationId();
+        user = await db_1.Users.create({
+            registrationId: regId,
+            name: name.trim(),
+            email: normalizedEmail,
+            phone: cleanPhone,
+            college: college.trim(),
+            branch: branch.trim(),
+            year: year.trim(),
+            gender: gender.trim(),
+            linkedin: linkedin.trim(),
+            portfolio: portfolio ? portfolio.trim() : undefined,
+            role: 'participant',
+            registrationStatus: 'DETAILS_SUBMITTED',
+            currentPhase: 'PAYMENT',
+            paymentStatus: 'pending',
+            originalAmount: 1000,
+            discountAmount: 0,
+            amountPaid: 0,
+            checkedIn: false,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+        });
+    }
+    if (!user) {
+        return res.status(500).json({ message: 'Failed to create or retrieve user registration.' });
+    }
+    const token = jsonwebtoken_1.default.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
+    // Broadcast realtime update to admin
+    (0, index_1.broadcastEvent)('registration_created', { user });
+    (0, index_1.broadcastEvent)('admin_stats_updated');
+    return res.status(201).json({
+        success: true,
+        message: 'Phase 1 registration details saved successfully.',
+        token,
+        user,
+        registrationId: user.registrationId || `DT26-${user.id.substring(0, 6).toUpperCase()}`
+    });
+});
 // 1. Send OTP (Simulated)
 router.post('/auth/otp-send', async (req, res) => {
     const { email } = req.body;
@@ -67,7 +222,7 @@ router.post('/auth/otp-verify', async (req, res) => {
     if (code !== '123456') {
         return res.status(400).json({ message: 'Invalid verification code' });
     }
-    let user = await db_1.Users.findOne({ email });
+    let user = await db_1.Users.findOne({ email: email.toLowerCase().trim() });
     if (!user) {
         // If sign up details are missing, tell the frontend to collect them
         if (!name || !phone || !college || !branch || !year || !gender) {
@@ -77,9 +232,11 @@ router.post('/auth/otp-verify', async (req, res) => {
             });
         }
         // Create User (Participant by default)
+        const regId = generateRegistrationId();
         user = await db_1.Users.create({
+            registrationId: regId,
             name,
-            email,
+            email: email.toLowerCase().trim(),
             phone,
             college,
             branch,
@@ -88,15 +245,46 @@ router.post('/auth/otp-verify', async (req, res) => {
             linkedin,
             portfolio,
             role: 'participant',
+            registrationStatus: 'DETAILS_SUBMITTED',
+            currentPhase: 'PAYMENT',
             paymentStatus: 'pending',
             amountPaid: 0,
             checkedIn: false,
-            createdAt: new Date().toISOString()
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
         });
+        (0, index_1.broadcastEvent)('registration_created', { user });
+        (0, index_1.broadcastEvent)('admin_stats_updated');
     }
     const token = jsonwebtoken_1.default.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
     return res.json({ token, user });
 });
+exports.FULL_ADMIN_EMAILS = [
+    'abbupasha61@gmail.com',
+    'vamshi.c2002@gmail.com',
+    'skywebdevelopers123@gmail.com',
+    'official@skywebdev.xyz',
+    'admin@designathon.com',
+    'admin@designthon.com'
+];
+exports.VIEWER_ADMIN_EMAILS = [
+    'marupakarevanth@gmail.com'
+];
+const getAdminRoleForEmail = (email) => {
+    const normalized = (email || '').toLowerCase().trim();
+    if (exports.FULL_ADMIN_EMAILS.some(e => e.toLowerCase() === normalized))
+        return 'super-admin';
+    if (exports.VIEWER_ADMIN_EMAILS.some(e => e.toLowerCase() === normalized))
+        return 'viewer';
+    const envSuper = (process.env.ADMIN_EMAILS || '').split(',').map(e => e.trim().toLowerCase()).filter(Boolean);
+    if (envSuper.includes(normalized))
+        return 'super-admin';
+    const envViewer = (process.env.VIEWER_ADMIN_EMAILS || '').split(',').map(e => e.trim().toLowerCase()).filter(Boolean);
+    if (envViewer.includes(normalized))
+        return 'viewer';
+    return null;
+};
+exports.getAdminRoleForEmail = getAdminRoleForEmail;
 // 2.5. Admin Login (Password-only for local running)
 router.post('/auth/admin-login', async (req, res) => {
     const { password } = req.body;
@@ -112,11 +300,79 @@ router.post('/auth/admin-login', async (req, res) => {
         name: 'Local Admin',
         email: 'admin@local.com',
         role: 'admin',
+        adminRole: 'super-admin',
         paymentStatus: 'paid',
         checkedIn: true
     };
-    const token = jsonwebtoken_1.default.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
+    const token = jsonwebtoken_1.default.sign({ id: user.id, role: user.role, adminRole: user.adminRole }, JWT_SECRET, { expiresIn: '7d' });
     return res.json({ token, user });
+});
+// 2.6. Admin Google Login with Email Whitelist & Permissions
+router.post('/auth/admin-google-login', async (req, res) => {
+    const { idToken } = req.body;
+    if (!idToken) {
+        return res.status(400).json({ message: 'Firebase ID token is required.' });
+    }
+    try {
+        const firebaseApiKey = process.env.FIREBASE_API_KEY;
+        const verifyRes = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${firebaseApiKey}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ idToken }),
+        });
+        if (!verifyRes.ok) {
+            const errBody = await verifyRes.json();
+            console.error('[Admin Google Login] Token verification failed:', errBody);
+            return res.status(401).json({ message: 'Invalid or expired Google token.' });
+        }
+        const verifyData = await verifyRes.json();
+        const googleUser = verifyData?.users?.[0];
+        if (!googleUser) {
+            return res.status(401).json({ message: 'Could not retrieve Google user info.' });
+        }
+        const email = (googleUser.email || '').toLowerCase().trim();
+        const name = googleUser.displayName || email.split('@')[0];
+        const adminRole = (0, exports.getAdminRoleForEmail)(email);
+        if (!adminRole) {
+            console.warn(`[Admin Google Login] Blocked unauthorized attempt from email: ${email}`);
+            return res.status(403).json({
+                message: `Access Denied: The account ${email} is not authorized to access the Admin Panel. Only permitted administrator accounts are allowed.`
+            });
+        }
+        // Admin email is authorized. Find or create the admin user in DB
+        let user = await db_1.Users.findOne({ email });
+        if (!user) {
+            user = await db_1.Users.create({
+                name,
+                email,
+                phone: '0000000000',
+                college: 'DESIGNATHON Core Admin',
+                branch: 'Administration',
+                year: 'N/A',
+                gender: 'Other',
+                linkedin: 'https://linkedin.com',
+                role: 'admin',
+                adminRole,
+                paymentStatus: 'paid',
+                registrationStatus: 'CONFIRMED',
+                currentPhase: 'CONFIRMATION',
+                amountPaid: 0,
+                checkedIn: true,
+                createdAt: new Date().toISOString()
+            });
+        }
+        else {
+            await db_1.Users.updateOne(user.id, { role: 'admin', adminRole });
+            user.role = 'admin';
+            user.adminRole = adminRole;
+        }
+        const token = jsonwebtoken_1.default.sign({ id: user.id, role: 'admin', adminRole }, JWT_SECRET, { expiresIn: '7d' });
+        return res.json({ success: true, token, user });
+    }
+    catch (err) {
+        console.error('[Admin Google Login] Error:', err);
+        return res.status(500).json({ message: 'Server error during admin Google authentication.' });
+    }
 });
 // 3. Google Login — verify Firebase ID token
 router.post('/auth/google-login', async (req, res) => {
@@ -144,8 +400,37 @@ router.post('/auth/google-login', async (req, res) => {
         }
         const email = (googleUser.email || '').toLowerCase().trim();
         const name = googleUser.displayName || email.split('@')[0];
+        // Check if user is an authorized admin
+        const adminRole = (0, exports.getAdminRoleForEmail)(email);
         // Check if user already exists in DB
         let user = await db_1.Users.findOne({ email });
+        if (adminRole) {
+            if (!user) {
+                user = await db_1.Users.create({
+                    name,
+                    email,
+                    phone: '0000000000',
+                    college: 'DESIGNATHON Core Admin',
+                    branch: 'Administration',
+                    year: 'N/A',
+                    gender: 'Other',
+                    linkedin: 'https://linkedin.com',
+                    role: 'admin',
+                    adminRole,
+                    paymentStatus: 'paid',
+                    registrationStatus: 'CONFIRMED',
+                    currentPhase: 'CONFIRMATION',
+                    amountPaid: 0,
+                    checkedIn: true,
+                    createdAt: new Date().toISOString()
+                });
+            }
+            else if (user.role !== 'admin' || user.adminRole !== adminRole) {
+                await db_1.Users.updateOne(user.id, { role: 'admin', adminRole });
+                user.role = 'admin';
+                user.adminRole = adminRole;
+            }
+        }
         if (!user) {
             // New user — redirect to registration with prefilled info
             return res.status(202).json({
@@ -224,11 +509,61 @@ router.get('/public/teams', async (req, res) => {
     }
     return res.json(filtered);
 });
-// 2. Get distinct college names that are participating
+// 2. Get distinct college names that are participating (confirmed only)
 router.get('/public/colleges', async (req, res) => {
-    const usersList = await db_1.Users.find();
+    const usersList = await db_1.Users.find(exports.isConfirmedParticipant);
     const collegesSet = new Set(usersList.map(u => u.college).filter(Boolean));
     return res.json(Array.from(collegesSet));
+});
+// 2.3 Get List of Public Participants (Search, filter, sort) - ONLY Confirmed/Paid Participants
+router.get('/public/participants', async (req, res) => {
+    const { search, college, lookingForTeam, sort } = req.query;
+    const allUsers = await db_1.Users.find(exports.isConfirmedParticipant);
+    const allTeams = await db_1.Teams.find();
+    const teamsMap = new Map(allTeams.map(t => [t.id, t.name]));
+    let participants = allUsers.map(u => ({
+        id: u.id,
+        registrationId: u.registrationId || `DT26-${u.id.substring(0, 6).toUpperCase()}`,
+        name: u.name,
+        college: u.college,
+        branch: u.branch,
+        year: u.year,
+        gender: u.gender,
+        linkedin: u.linkedin,
+        portfolio: u.portfolio,
+        teamId: u.teamId,
+        teamName: u.teamId ? (teamsMap.get(u.teamId) || 'In Team') : undefined,
+        teamRole: u.teamRole,
+        paymentStatus: u.paymentStatus,
+        registrationStatus: u.registrationStatus || 'CONFIRMED',
+        createdAt: u.createdAt
+    }));
+    // Search filter
+    if (search) {
+        const term = String(search).toLowerCase();
+        participants = participants.filter(p => p.name.toLowerCase().includes(term) ||
+            (p.college && p.college.toLowerCase().includes(term)) ||
+            (p.branch && p.branch.toLowerCase().includes(term)) ||
+            (p.teamName && p.teamName.toLowerCase().includes(term)) ||
+            (p.registrationId && p.registrationId.toLowerCase().includes(term)));
+    }
+    // College filter
+    if (college) {
+        const clg = String(college).toLowerCase();
+        participants = participants.filter(p => p.college && p.college.toLowerCase() === clg);
+    }
+    // Looking for team filter
+    if (lookingForTeam === 'true') {
+        participants = participants.filter(p => !p.teamId);
+    }
+    // Sort
+    if (sort === 'newest') {
+        participants.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    }
+    else {
+        participants.sort((a, b) => a.name.localeCompare(b.name));
+    }
+    return res.json(participants);
 });
 // 2.5 Get details of a single team by ID
 router.get('/public/teams/:id', async (req, res) => {
@@ -247,10 +582,11 @@ router.get('/public/teams/:id', async (req, res) => {
 // 1. Validate Coupon Code
 router.post('/coupons/validate', async (req, res) => {
     const { code, college } = req.body;
-    if (!code) {
-        return res.status(400).json({ message: 'Coupon code is required' });
+    if (!code || !code.trim()) {
+        return res.status(400).json({ valid: false, message: 'Coupon code is required' });
     }
-    const coupon = await db_1.Coupons.findOne({ code: code.toUpperCase() });
+    const cleanCode = code.toUpperCase().trim();
+    const coupon = await db_1.Coupons.findOne({ code: cleanCode });
     if (!coupon || !coupon.isActive) {
         return res.status(400).json({ valid: false, message: 'Invalid or inactive coupon code' });
     }
@@ -258,24 +594,24 @@ router.post('/coupons/validate', async (req, res) => {
         return res.status(400).json({ valid: false, message: 'Coupon code has expired' });
     }
     if (coupon.usageCount >= coupon.usageLimit) {
-        return res.status(400).json({ valid: false, message: 'Coupon limit reached' });
+        return res.status(400).json({ valid: false, message: 'Coupon usage limit reached' });
     }
     // College restriction check
     if (coupon.collegeName && college) {
-        if (coupon.collegeName.toLowerCase() !== college.toLowerCase()) {
+        if (!college.toLowerCase().includes(coupon.collegeName.toLowerCase()) && !coupon.collegeName.toLowerCase().includes(college.toLowerCase())) {
             return res.status(400).json({
                 valid: false,
-                message: `This coupon is only valid for students from ${coupon.collegeName}`
+                message: `This coupon is only valid for participants from ${coupon.collegeName}`
             });
         }
     }
     const basePrice = 1000;
     let discountAmount = 0;
     if (coupon.discountType === 'percentage') {
-        discountAmount = (basePrice * coupon.discountValue) / 100;
+        discountAmount = Math.round((basePrice * coupon.discountValue) / 100);
     }
     else {
-        discountAmount = coupon.discountValue;
+        discountAmount = Math.min(basePrice, coupon.discountValue);
     }
     const finalPrice = Math.max(0, basePrice - discountAmount);
     return res.json({
@@ -283,16 +619,46 @@ router.post('/coupons/validate', async (req, res) => {
         code: coupon.code,
         discountType: coupon.discountType,
         discountValue: coupon.discountValue,
+        originalAmount: basePrice,
         discountAmount,
         finalPrice
     });
 });
-// --- PAYMENTS & REGISTRATION MOCKS ---
+// --- PAYMENTS & REGISTRATION ---
 // 1. Create Order (Real Razorpay integration)
 router.post('/payments/create-order', exports.authenticateToken, async (req, res) => {
-    const { amount } = req.body;
-    if (!amount)
-        return res.status(400).json({ message: 'Amount is required' });
+    const { amount, couponCode } = req.body;
+    const userId = req.user?.id;
+    if (!userId)
+        return res.status(401).json({ message: 'Unauthorized' });
+    const user = await db_1.Users.findOne({ id: userId });
+    if (!user)
+        return res.status(404).json({ message: 'User not found' });
+    let discountAmount = 0;
+    let finalAmount = typeof amount === 'number' ? amount : 1000;
+    if (couponCode) {
+        const coupon = await db_1.Coupons.findOne({ code: couponCode.toUpperCase().trim() });
+        if (coupon && coupon.isActive && coupon.usageCount < coupon.usageLimit) {
+            if (coupon.discountType === 'percentage') {
+                discountAmount = Math.round((1000 * coupon.discountValue) / 100);
+            }
+            else {
+                discountAmount = Math.min(1000, coupon.discountValue);
+            }
+            finalAmount = Math.max(0, 1000 - discountAmount);
+        }
+    }
+    // Update user state to PAYMENT_PENDING
+    await db_1.Users.updateOne(user.id, {
+        registrationStatus: 'PAYMENT_PENDING',
+        currentPhase: 'PAYMENT',
+        couponUsed: couponCode || undefined,
+        originalAmount: 1000,
+        discountAmount,
+        updatedAt: new Date().toISOString()
+    });
+    (0, index_1.broadcastEvent)('admin_stats_updated');
+    (0, index_1.broadcastEvent)('registration_updated', { userId: user.id, status: 'PAYMENT_PENDING' });
     try {
         const keyId = process.env.key_id;
         const keySecret = process.env.key_secret;
@@ -306,7 +672,7 @@ router.post('/payments/create-order', exports.authenticateToken, async (req, res
                 'Authorization': 'Basic ' + Buffer.from(`${keyId}:${keySecret}`).toString('base64')
             },
             body: JSON.stringify({
-                amount: Math.round(amount * 100), // Razorpay works in paise
+                amount: Math.round(finalAmount * 100), // Razorpay works in paise
                 currency: 'INR',
                 receipt: `receipt_${(0, uuid_1.v4)().substring(0, 14)}`
             })
@@ -321,6 +687,7 @@ router.post('/payments/create-order', exports.authenticateToken, async (req, res
             id: order.id,
             currency: order.currency,
             amount: order.amount,
+            finalAmount
         });
     }
     catch (error) {
@@ -347,12 +714,34 @@ router.post('/payments/verify', exports.authenticateToken, async (req, res) => {
         .update(`${razorpay_order_id}|${razorpay_payment_id}`)
         .digest('hex');
     if (generated_signature !== razorpay_signature) {
+        await db_1.Users.updateOne(userId, {
+            registrationStatus: 'PAYMENT_FAILED',
+            paymentStatus: 'failed',
+            updatedAt: new Date().toISOString()
+        });
+        (0, index_1.broadcastEvent)('admin_stats_updated');
+        (0, index_1.broadcastEvent)('payment_updated', { userId, status: 'PAYMENT_FAILED' });
         return res.status(400).json({ message: 'Payment verification failed: Signature mismatch' });
     }
     // Update User Payment Status
     const user = await db_1.Users.findOne({ id: userId });
     if (!user)
         return res.status(404).json({ message: 'User not found' });
+    // Calculate discount & update coupon usage
+    let discountAmount = 0;
+    if (couponCode) {
+        const coupon = await db_1.Coupons.findOne({ code: couponCode.toUpperCase().trim() });
+        if (coupon) {
+            if (coupon.discountType === 'percentage') {
+                discountAmount = Math.round((1000 * coupon.discountValue) / 100);
+            }
+            else {
+                discountAmount = Math.min(1000, coupon.discountValue);
+            }
+            await db_1.Coupons.updateOne(coupon.id, { usageCount: coupon.usageCount + 1 });
+        }
+    }
+    const finalPaidAmount = typeof amount === 'number' ? amount : Math.max(0, 1000 - discountAmount);
     // Log the payment
     const paymentLog = await db_1.Payments.create({
         razorpayPaymentId: razorpay_payment_id,
@@ -360,44 +749,50 @@ router.post('/payments/verify', exports.authenticateToken, async (req, res) => {
         userId: user.id,
         userName: user.name,
         userEmail: user.email,
-        amount: amount || 1000,
+        amount: finalPaidAmount,
         status: 'success',
-        couponUsed: couponCode,
+        couponUsed: couponCode || undefined,
         createdAt: new Date().toISOString()
     });
-    // Increment coupon count if used
-    if (couponCode) {
-        const coupon = await db_1.Coupons.findOne({ code: couponCode.toUpperCase() });
-        if (coupon) {
-            await db_1.Coupons.updateOne(coupon.id, { usageCount: coupon.usageCount + 1 });
-        }
-    }
     // Update user profile
     await db_1.Users.updateOne(user.id, {
         paymentStatus: 'paid',
+        registrationStatus: 'CONFIRMED',
+        currentPhase: 'CONFIRMATION',
         paymentId: paymentLog.razorpayPaymentId,
         couponUsed: couponCode || undefined,
-        amountPaid: amount || 1000
+        discountAmount,
+        originalAmount: 1000,
+        amountPaid: finalPaidAmount,
+        updatedAt: new Date().toISOString()
     });
     // Create real-time notification
     await db_1.Notifications.create({
         recipientType: 'individual',
         recipientTarget: user.id,
-        title: 'Payment Successful',
-        message: `Thank you, ${user.name}! Your payment of ₹${amount || 1000} has been processed successfully. You are now registered.`,
+        title: 'Payment Successful & Confirmed',
+        message: `Thank you, ${user.name}! Your payment of ₹${finalPaidAmount} has been processed successfully. Your registration ID is ${user.registrationId || user.id}.`,
         type: 'success',
         readBy: [],
         createdAt: new Date().toISOString()
     });
+    // Broadcast realtime updates to connected sockets & admin
+    (0, index_1.broadcastEvent)('payment_updated', { userId: user.id, status: 'CONFIRMED' });
+    (0, index_1.broadcastEvent)('admin_stats_updated');
     // Send email confirmation
     try {
         const origin = req.get('origin') || 'http://localhost:3000';
+        const regDisplayId = user.registrationId || `DT26-${user.id.substring(0, 6).toUpperCase()}`;
         const ticketHtml = `
       <p>Hello <strong>${user.name}</strong>,</p>
       <p>Your registration payment has been verified. Here is your entry pass and receipt details:</p>
       
       <div class="ticket-card">
         <div class="ticket-header">ENTRY PASS & RECEIPT</div>
+        <div class="ticket-row">
+          <span class="ticket-label">Registration ID</span>
+          <span class="ticket-value" style="font-family: monospace; font-weight: bold; color: #a78bfa;">${regDisplayId}</span>
+        </div>
         <div class="ticket-row">
           <span class="ticket-label">Attendee Name</span>
           <span class="ticket-value">${user.name}</span>
@@ -417,11 +812,11 @@ router.post('/payments/verify', exports.authenticateToken, async (req, res) => {
         ${couponCode ? `
         <div class="ticket-row">
           <span class="ticket-label">Coupon Applied</span>
-          <span class="ticket-value">${couponCode}</span>
+          <span class="ticket-value">${couponCode} (-₹${discountAmount})</span>
         </div>` : ''}
         <div class="ticket-row ticket-total">
           <span>Amount Paid</span>
-          <span>₹${amount || 1000}</span>
+          <span>₹${finalPaidAmount}</span>
         </div>
         
         <div class="qr-container">
@@ -441,13 +836,108 @@ router.post('/payments/verify', exports.authenticateToken, async (req, res) => {
       </div>
     `;
         const mailHtml = (0, mail_1.getEmailTemplate)('Registration Confirmed!', ticketHtml);
-        await (0, mail_1.sendEmail)(user.email, 'DESIGNTHON 2026 - Registration Confirmed', mailHtml);
+        await (0, mail_1.sendEmail)(user.email, 'DESIGNATHON 2026 - Registration Confirmed', mailHtml);
     }
     catch (mailErr) {
         console.error('[Mail Error] Failed to send payment confirmation email:', mailErr);
     }
     const updatedUser = await db_1.Users.findOne({ id: user.id });
     return res.json({ success: true, message: 'Payment completed successfully', user: updatedUser });
+});
+// 3. Verify Free / 100% Discount Registration
+router.post('/payments/verify-free', exports.authenticateToken, async (req, res) => {
+    const { couponCode } = req.body;
+    const userId = req.user?.id;
+    if (!userId)
+        return res.status(401).json({ message: 'Unauthorized' });
+    const user = await db_1.Users.findOne({ id: userId });
+    if (!user)
+        return res.status(404).json({ message: 'User not found' });
+    if (!couponCode) {
+        return res.status(400).json({ message: 'Coupon code is required' });
+    }
+    const coupon = await db_1.Coupons.findOne({ code: couponCode.toUpperCase().trim() });
+    if (!coupon || !coupon.isActive) {
+        return res.status(400).json({ message: 'Invalid or inactive coupon code' });
+    }
+    if (new Date(coupon.expiryDate).getTime() < Date.now()) {
+        return res.status(400).json({ message: 'Coupon has expired' });
+    }
+    if (coupon.usageCount >= coupon.usageLimit) {
+        return res.status(400).json({ message: 'Coupon usage limit reached' });
+    }
+    // College restriction check
+    if (coupon.collegeName && user.college) {
+        if (!user.college.toLowerCase().includes(coupon.collegeName.toLowerCase()) && !coupon.collegeName.toLowerCase().includes(user.college.toLowerCase())) {
+            return res.status(400).json({ message: `This coupon is only valid for participants from ${coupon.collegeName}` });
+        }
+    }
+    // Validate that discount is truly 100% (or fixed 1000)
+    const isHundredPercent = (coupon.discountType === 'percentage' && coupon.discountValue >= 100) || (coupon.discountType === 'fixed' && coupon.discountValue >= 1000);
+    if (!isHundredPercent) {
+        return res.status(400).json({ message: 'This coupon does not provide 100% discount' });
+    }
+    // Increment usage count
+    await db_1.Coupons.updateOne(coupon.id, { usageCount: coupon.usageCount + 1 });
+    const freePaymentId = `FREE-${(0, uuid_1.v4)().substring(0, 8).toUpperCase()}`;
+    // Log payment
+    await db_1.Payments.create({
+        razorpayPaymentId: freePaymentId,
+        razorpayOrderId: `ORDER-${freePaymentId}`,
+        userId: user.id,
+        userName: user.name,
+        userEmail: user.email,
+        amount: 0,
+        status: 'success',
+        couponUsed: coupon.code,
+        createdAt: new Date().toISOString()
+    });
+    // Update user profile
+    await db_1.Users.updateOne(user.id, {
+        paymentStatus: 'paid',
+        registrationStatus: 'CONFIRMED',
+        currentPhase: 'CONFIRMATION',
+        paymentId: freePaymentId,
+        couponUsed: coupon.code,
+        originalAmount: 1000,
+        discountAmount: 1000,
+        amountPaid: 0,
+        updatedAt: new Date().toISOString()
+    });
+    // Notification
+    await db_1.Notifications.create({
+        recipientType: 'individual',
+        recipientTarget: user.id,
+        title: 'Registration Confirmed (100% Coupon Applied)',
+        message: `Welcome, ${user.name}! Your 100% coupon ${coupon.code} was applied successfully. Your registration ID is ${user.registrationId || user.id}.`,
+        type: 'success',
+        readBy: [],
+        createdAt: new Date().toISOString()
+    });
+    // Broadcast realtime update
+    (0, index_1.broadcastEvent)('payment_updated', { userId: user.id, status: 'CONFIRMED' });
+    (0, index_1.broadcastEvent)('admin_stats_updated');
+    const updatedUser = await db_1.Users.findOne({ id: user.id });
+    return res.json({ success: true, message: 'Registration confirmed with 100% coupon', user: updatedUser });
+});
+// 4. Update Payment & Phase Status (e.g. on dismissal or failure)
+router.post('/payments/status-update', exports.authenticateToken, async (req, res) => {
+    const { status, phase } = req.body;
+    const userId = req.user?.id;
+    if (!userId)
+        return res.status(401).json({ message: 'Unauthorized' });
+    const validStatuses = ['DETAILS_SUBMITTED', 'PAYMENT_PENDING', 'PAYMENT_FAILED', 'CANCELLED'];
+    if (status && validStatuses.includes(status)) {
+        await db_1.Users.updateOne(userId, {
+            registrationStatus: status,
+            paymentStatus: status === 'PAYMENT_FAILED' ? 'failed' : 'pending',
+            currentPhase: phase || 'PAYMENT',
+            updatedAt: new Date().toISOString()
+        });
+        (0, index_1.broadcastEvent)('admin_stats_updated');
+        (0, index_1.broadcastEvent)('registration_updated', { userId, status });
+    }
+    return res.json({ success: true });
 });
 // --- TEAMS ENDPOINTS (AUTHENTICATED) ---
 // 1. Create a Team
@@ -569,7 +1059,7 @@ router.post('/teams/join-request', exports.authenticateToken, async (req, res) =
         </div>
       `;
             const mailHtml = (0, mail_1.getEmailTemplate)('New Join Request Received!', requestHtml);
-            await (0, mail_1.sendEmail)(leader.email, `DESIGNTHON 2026 - Join Request from ${user.name}`, mailHtml);
+            await (0, mail_1.sendEmail)(leader.email, `DESIGNATHON 2026 - Join Request from ${user.name}`, mailHtml);
         }
     }
     catch (mailErr) {
@@ -647,7 +1137,7 @@ router.post('/teams/respond-request', exports.authenticateToken, async (req, res
           </div>
         `;
                 const mailHtml = (0, mail_1.getEmailTemplate)('Join Request Approved!', approvedHtml);
-                await (0, mail_1.sendEmail)(applicant.email, `DESIGNTHON 2026 - Join Request Approved for ${team.name}`, mailHtml);
+                await (0, mail_1.sendEmail)(applicant.email, `DESIGNATHON 2026 - Join Request Approved for ${team.name}`, mailHtml);
             }
         }
         catch (mailErr) {
@@ -682,7 +1172,7 @@ router.post('/teams/respond-request', exports.authenticateToken, async (req, res
           </div>
         `;
                 const mailHtml = (0, mail_1.getEmailTemplate)('Join Request Update', rejectedHtml);
-                await (0, mail_1.sendEmail)(applicant.email, `DESIGNTHON 2026 - Join Request Update`, mailHtml);
+                await (0, mail_1.sendEmail)(applicant.email, `DESIGNATHON 2026 - Join Request Update`, mailHtml);
             }
         }
         catch (mailErr) {
@@ -771,17 +1261,22 @@ router.get('/admin/stats', exports.authenticateToken, exports.requireAdmin, asyn
     const allUsers = await db_1.Users.find();
     const allTeams = await db_1.Teams.find();
     const allPayments = await db_1.Payments.find();
-    const totalRegistrations = allUsers.filter(u => u.role !== 'admin').length;
-    const paidParticipants = allUsers.filter(u => u.paymentStatus === 'paid' && u.role !== 'admin').length;
-    const pendingPayments = allUsers.filter(u => u.paymentStatus === 'pending' && u.role !== 'admin').length;
+    const realParticipants = allUsers.filter(exports.isRealParticipant);
+    const totalRegistrations = realParticipants.length;
+    const paidParticipants = realParticipants.filter(u => u.paymentStatus === 'paid' || u.registrationStatus === 'CONFIRMED').length;
+    const confirmedParticipants = paidParticipants;
+    const detailsSubmittedCount = realParticipants.filter(u => u.registrationStatus === 'DETAILS_SUBMITTED' || (!u.registrationStatus && u.paymentStatus !== 'paid')).length;
+    const pendingPayments = realParticipants.filter(u => u.registrationStatus === 'PAYMENT_PENDING' || (u.paymentStatus === 'pending' && u.registrationStatus !== 'DETAILS_SUBMITTED')).length;
+    const failedPayments = realParticipants.filter(u => u.registrationStatus === 'PAYMENT_FAILED' || u.registrationStatus === 'CANCELLED' || u.paymentStatus === 'failed').length;
+    const checkedInCount = realParticipants.filter(u => u.checkedIn).length;
     const totalTeams = allTeams.length;
-    const availableSlots = 200 - paidParticipants; // e.g. Limit 200 attendees
-    // Calculate total revenue
+    const availableSlots = Math.max(0, 200 - paidParticipants); // e.g. Limit 200 attendees
+    // Calculate total revenue from real participant payments
     const totalRevenue = allPayments
-        .filter(p => p.status === 'success')
+        .filter(p => p.status === 'success' && !exports.HIDDEN_TEST_EMAILS.includes((p.userEmail || '').toLowerCase()) && !exports.HIDDEN_TEST_NAMES.includes((p.userName || '').toLowerCase()))
         .reduce((sum, p) => sum + p.amount, 0);
     // College count
-    const collegesList = allUsers.map(u => u.college).filter(Boolean);
+    const collegesList = realParticipants.map(u => u.college).filter(Boolean);
     const collegeCounts = {};
     collegesList.forEach(c => {
         collegeCounts[c] = (collegeCounts[c] || 0) + 1;
@@ -789,9 +1284,7 @@ router.get('/admin/stats', exports.authenticateToken, exports.requireAdmin, asyn
     const collegesParticipating = Object.keys(collegeCounts).length;
     // Chart data simulation (Group by date)
     const registrationsByDate = {};
-    allUsers.forEach(u => {
-        if (u.role === 'admin')
-            return;
+    realParticipants.forEach(u => {
         const dateStr = u.createdAt ? u.createdAt.split('T')[0] : 'Unknown';
         registrationsByDate[dateStr] = (registrationsByDate[dateStr] || 0) + 1;
     });
@@ -801,8 +1294,15 @@ router.get('/admin/stats', exports.authenticateToken, exports.requireAdmin, asyn
     })).sort((a, b) => a.date.localeCompare(b.date));
     return res.json({
         totalRegistrations,
+        totalParticipants: totalRegistrations,
         paidParticipants,
+        confirmedParticipants,
+        detailsSubmittedCount,
         pendingPayments,
+        paymentPendingCount: pendingPayments,
+        failedPayments,
+        paymentFailedCount: failedPayments,
+        checkedInCount,
         totalTeams,
         availableSlots,
         totalRevenue,
@@ -813,19 +1313,43 @@ router.get('/admin/stats', exports.authenticateToken, exports.requireAdmin, asyn
 });
 // 2. Get list of participants
 router.get('/admin/participants', exports.authenticateToken, exports.requireAdmin, async (req, res) => {
-    const { search } = req.query;
-    let list = await db_1.Users.find(u => u.role !== 'admin');
+    const { search, filter } = req.query;
+    let list = await db_1.Users.find(exports.isRealParticipant);
+    // Attach default registrationId & status if missing
+    list = list.map(u => ({
+        ...u,
+        registrationId: u.registrationId || (u.role === 'admin' ? 'ADMIN' : `DT26-${u.id.substring(0, 6).toUpperCase()}`),
+        registrationStatus: u.registrationStatus || (u.paymentStatus === 'paid' ? 'CONFIRMED' : 'DETAILS_SUBMITTED'),
+        currentPhase: u.currentPhase || (u.paymentStatus === 'paid' ? 'CONFIRMATION' : 'REGISTRATION')
+    }));
     if (search) {
         const term = String(search).toLowerCase();
-        list = list.filter(u => u.name.toLowerCase().includes(term) ||
-            u.email.toLowerCase().includes(term) ||
-            u.college.toLowerCase().includes(term) ||
-            u.phone.includes(term));
+        list = list.filter(u => (u.name && u.name.toLowerCase().includes(term)) ||
+            (u.email && u.email.toLowerCase().includes(term)) ||
+            (u.college && u.college.toLowerCase().includes(term)) ||
+            (u.phone && u.phone.includes(term)) ||
+            (u.registrationId && u.registrationId.toLowerCase().includes(term)));
     }
+    if (filter && filter !== 'all') {
+        if (filter === 'paid' || filter === 'confirmed') {
+            list = list.filter(u => u.paymentStatus === 'paid' || u.registrationStatus === 'CONFIRMED');
+        }
+        else if (filter === 'submitted' || filter === 'unpaid') {
+            list = list.filter(u => u.paymentStatus !== 'paid' && u.registrationStatus !== 'CONFIRMED');
+        }
+        else if (filter === 'checkedin') {
+            list = list.filter(u => u.checkedIn);
+        }
+        else if (filter === 'failed') {
+            list = list.filter(u => u.registrationStatus === 'PAYMENT_FAILED' || u.registrationStatus === 'CANCELLED' || u.paymentStatus === 'failed');
+        }
+    }
+    // Sort newest first by default
+    list.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
     return res.json(list);
 });
 // 3. Mark manual check-in or Scan QR code verify
-router.post('/admin/check-in', exports.authenticateToken, exports.requireAdmin, async (req, res) => {
+router.post('/admin/check-in', exports.authenticateToken, exports.requireFullAdmin, async (req, res) => {
     const { userId } = req.body;
     if (!userId)
         return res.status(400).json({ message: 'User ID is required' });
@@ -848,7 +1372,7 @@ router.get('/admin/coupons', exports.authenticateToken, exports.requireAdmin, as
     return res.json(list);
 });
 // 5. Create Coupon
-router.post('/admin/coupons/create', exports.authenticateToken, exports.requireAdmin, async (req, res) => {
+router.post('/admin/coupons/create', exports.authenticateToken, exports.requireFullAdmin, async (req, res) => {
     const { code, discountType, discountValue, collegeName, usageLimit, expiryDate } = req.body;
     if (!code || !discountType || !discountValue || !usageLimit || !expiryDate) {
         return res.status(400).json({ message: 'All fields are required' });
@@ -871,7 +1395,7 @@ router.post('/admin/coupons/create', exports.authenticateToken, exports.requireA
     return res.json({ success: true, coupon: newCoupon });
 });
 // 6. Toggle Coupon Active Status
-router.post('/admin/coupons/toggle', exports.authenticateToken, exports.requireAdmin, async (req, res) => {
+router.post('/admin/coupons/toggle', exports.authenticateToken, exports.requireFullAdmin, async (req, res) => {
     const { couponId } = req.body;
     if (!couponId)
         return res.status(400).json({ message: 'Coupon ID is required' });
@@ -896,7 +1420,7 @@ router.get('/admin/teams', exports.authenticateToken, exports.requireAdmin, asyn
     return res.json(enhancedTeams);
 });
 // 8. Delete a Team
-router.delete('/admin/teams/:id', exports.authenticateToken, exports.requireAdmin, async (req, res) => {
+router.delete('/admin/teams/:id', exports.authenticateToken, exports.requireFullAdmin, async (req, res) => {
     const { id } = req.params;
     const team = await db_1.Teams.findOne({ id });
     if (!team)
@@ -907,7 +1431,7 @@ router.delete('/admin/teams/:id', exports.authenticateToken, exports.requireAdmi
     return res.json({ success: true, message: 'Team dissolved and members reset.' });
 });
 // 9. Merge two teams
-router.post('/admin/teams/merge', exports.authenticateToken, exports.requireAdmin, async (req, res) => {
+router.post('/admin/teams/merge', exports.authenticateToken, exports.requireFullAdmin, async (req, res) => {
     const { teamAId, teamBId } = req.body;
     if (!teamAId || !teamBId) {
         return res.status(400).json({ message: 'Both Team IDs are required' });
@@ -940,7 +1464,7 @@ router.post('/admin/teams/merge', exports.authenticateToken, exports.requireAdmi
     return res.json({ success: true, message: `Successfully merged team ${teamB.name} into ${teamA.name}` });
 });
 // 10. Send Broadcast Notification (SMS/Email simulation)
-router.post('/admin/notifications/send', exports.authenticateToken, exports.requireAdmin, async (req, res) => {
+router.post('/admin/notifications/send', exports.authenticateToken, exports.requireFullAdmin, async (req, res) => {
     const { recipientType, recipientTarget, title, message, channel } = req.body; // channel: 'email' | 'sms' | 'push'
     if (!recipientType || !title || !message) {
         return res.status(400).json({ message: 'recipientType, title and message are required' });
@@ -992,7 +1516,7 @@ router.post('/admin/notifications/send', exports.authenticateToken, exports.requ
 });
 // 11. Export CSV Participants
 router.get('/admin/export-csv', exports.authenticateToken, exports.requireAdmin, async (req, res) => {
-    const users = await db_1.Users.find(u => u.role !== 'admin');
+    const users = await db_1.Users.find(exports.isRealParticipant);
     // Create CSV format
     const headers = 'ID,Name,Email,Phone,College,Branch,Year,PaymentStatus,AmountPaid,CheckedIn,RegistrationDate\n';
     const rows = users.map(u => `"${u.id}","${u.name}","${u.email}","${u.phone}","${u.college}","${u.branch}","${u.year}","${u.paymentStatus}",${u.amountPaid},"${u.checkedIn ? 'Yes' : 'No'}","${u.createdAt}"`).join('\n');
@@ -1102,7 +1626,7 @@ router.post('/teams/invite', exports.authenticateToken, async (req, res) => {
         const inviteLink = `${origin}/teams/join?teamId=${team.id}`;
         const inviteHtml = `
       <p>Hello,</p>
-      <p>You have been invited by <strong>${leader.name}</strong> to join their team <strong>"${team.name}"</strong> for <strong>DESIGNTHON 2026</strong>.</p>
+      <p>You have been invited by <strong>${leader.name}</strong> to join their team <strong>"${team.name}"</strong> for <strong>DESIGNATHON 2026</strong>.</p>
       
       <div class="ticket-card" style="text-align: center; padding: 25px;">
         <h3 style="color: #ffffff; margin-top: 0;">TEAM INVITATION</h3>
@@ -1115,7 +1639,7 @@ router.post('/teams/invite', exports.authenticateToken, async (req, res) => {
       <p>Please note: every member must complete individual registration and payment before joining a team.</p>
     `;
         const mailHtml = (0, mail_1.getEmailTemplate)('Team Invitation Received!', inviteHtml);
-        await (0, mail_1.sendEmail)(inviteeEmail.toLowerCase(), `DESIGNTHON 2026 - Team Invitation from ${leader.name}`, mailHtml);
+        await (0, mail_1.sendEmail)(inviteeEmail.toLowerCase(), `DESIGNATHON 2026 - Team Invitation from ${leader.name}`, mailHtml);
     }
     catch (mailErr) {
         console.error('[Mail Error] Failed to send team invite email:', mailErr);
@@ -1198,7 +1722,7 @@ router.post('/teams/invite-respond', exports.authenticateToken, async (req, res)
         </div>
       `;
             const mailHtml = (0, mail_1.getEmailTemplate)('Invitation Accepted!', acceptHtml);
-            await (0, mail_1.sendEmail)(leader.email, `DESIGNTHON 2026 - ${user.name} joined your team`, mailHtml);
+            await (0, mail_1.sendEmail)(leader.email, `DESIGNATHON 2026 - ${user.name} joined your team`, mailHtml);
         }
     }
     catch (mailErr) {

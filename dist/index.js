@@ -3,6 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.broadcastEvent = exports.io = exports.server = exports.app = exports.checkCorsOrigin = void 0;
 const express_1 = __importDefault(require("express"));
 const http_1 = __importDefault(require("http"));
 const socket_io_1 = require("socket.io");
@@ -11,65 +12,84 @@ const dotenv_1 = __importDefault(require("dotenv"));
 const api_1 = __importDefault(require("./routes/api"));
 const db_1 = require("./config/db");
 dotenv_1.default.config();
-const allowedOrigins = process.env.FRONTEND_URL
-    ? process.env.FRONTEND_URL.split(',').map((o) => o.trim())
-    : [
-        'http://localhost:3000',
-        'http://127.0.0.1:3000',
-        'http://localhost:5173',
-        'http://localhost:5174',
-        'https://designthon.skywebdev.xyz'
-    ];
-const app = (0, express_1.default)();
-const server = http_1.default.createServer(app);
-const io = new socket_io_1.Server(server, {
+const defaultAllowedOrigins = [
+    'http://localhost:3000',
+    'http://127.0.0.1:3000',
+    'http://localhost:5173',
+    'http://localhost:5174',
+    'https://designthon.skywebdev.xyz',
+    'https://designathon.skywebdev.xyz',
+    'https://admin.designthon.skywebdev.xyz',
+    'https://admin.skywebdev.xyz'
+];
+const checkCorsOrigin = (origin) => {
+    if (!origin)
+        return true;
+    const cleanOrigin = origin.replace(/\/+$/, '').toLowerCase();
+    // Check default allowed list
+    if (defaultAllowedOrigins.some(o => o.toLowerCase() === cleanOrigin))
+        return true;
+    // Check env variable list
+    if (process.env.FRONTEND_URL) {
+        const envOrigins = process.env.FRONTEND_URL.split(',').map(o => o.trim().replace(/\/+$/, '').toLowerCase()).filter(Boolean);
+        if (envOrigins.includes(cleanOrigin))
+            return true;
+    }
+    // Allow any skywebdev.xyz subdomain (e.g. https://designthon.skywebdev.xyz, https://admin.skywebdev.xyz)
+    if (/^https?:\/\/([a-zA-Z0-9-]+\.)*skywebdev\.xyz(:[0-9]+)?$/.test(cleanOrigin)) {
+        return true;
+    }
+    // Allow any Vercel deployment domains
+    if (/^https?:\/\/([a-zA-Z0-9-]+\.)*vercel\.app(:[0-9]+)?$/.test(cleanOrigin)) {
+        return true;
+    }
+    // Allow any localhost / 127.0.0.1 port
+    if (/^https?:\/\/(localhost|127\.0\.0\.1)(:[0-9]+)?$/.test(cleanOrigin)) {
+        return true;
+    }
+    return false;
+};
+exports.checkCorsOrigin = checkCorsOrigin;
+exports.app = (0, express_1.default)();
+exports.server = http_1.default.createServer(exports.app);
+exports.io = new socket_io_1.Server(exports.server, {
     cors: {
         origin: (origin, callback) => {
-            if (!origin)
-                return callback(null, true);
-            if (process.env.FRONTEND_URL) {
-                if (allowedOrigins.indexOf(origin) !== -1) {
-                    callback(null, true);
-                }
-                else {
-                    callback(new Error('Not allowed by CORS'));
-                }
-            }
-            else {
+            if ((0, exports.checkCorsOrigin)(origin)) {
                 callback(null, true);
             }
+            else {
+                console.warn(`[Socket CORS] Origin rejected: ${origin}`);
+                callback(new Error('Not allowed by CORS'));
+            }
         },
-        methods: ['GET', 'POST', 'PUT', 'DELETE'],
+        methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
         credentials: true
     }
 });
-app.use((0, cors_1.default)({
+exports.app.use((0, cors_1.default)({
     origin: (origin, callback) => {
-        if (!origin)
-            return callback(null, true);
-        if (process.env.FRONTEND_URL) {
-            if (allowedOrigins.indexOf(origin) !== -1) {
-                callback(null, true);
-            }
-            else {
-                callback(new Error('Not allowed by CORS'));
-            }
-        }
-        else {
+        if ((0, exports.checkCorsOrigin)(origin)) {
             callback(null, true);
         }
+        else {
+            console.warn(`[Express CORS] Origin rejected: ${origin}`);
+            callback(new Error(`CORS Error: Origin ${origin} not allowed`));
+        }
     },
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
     credentials: true
 }));
-app.use(express_1.default.json());
+exports.app.use(express_1.default.json());
 // API Routes
-app.use('/api', api_1.default);
+exports.app.use('/api', api_1.default);
 // Basic health check
-app.get('/', (req, res) => {
+exports.app.get('/', (req, res) => {
     res.json({ message: 'DESIGNTHON API server running...' });
 });
 // Socket.IO real-time communication
-io.on('connection', (socket) => {
+exports.io.on('connection', (socket) => {
     console.log(`[Socket] User connected: ${socket.id}`);
     // User joins their personal room for notifications
     socket.on('join_user_room', (userId) => {
@@ -99,21 +119,27 @@ io.on('connection', (socket) => {
         });
         // If approved, notify the entire team room to update their member list
         if (data.status === 'approved') {
-            io.to(data.teamId).emit('team_updated');
+            exports.io.to(data.teamId).emit('team_updated');
         }
     });
     // Broadcast team changes (members leaving, role edits)
     socket.on('team_modified', (teamId) => {
-        io.to(teamId).emit('team_updated');
+        exports.io.to(teamId).emit('team_updated');
     });
     // Admin broad notification trigger
     socket.on('admin_broadcast', (data) => {
-        io.emit('broadcast_received', data);
+        exports.io.emit('broadcast_received', data);
     });
     socket.on('disconnect', () => {
         console.log(`[Socket] User disconnected: ${socket.id}`);
     });
 });
+const broadcastEvent = (eventName, data) => {
+    if (exports.io) {
+        exports.io.emit(eventName, data);
+    }
+};
+exports.broadcastEvent = broadcastEvent;
 const PORT = process.env.PORT || 5000;
 async function startServer() {
     try {
@@ -121,7 +147,7 @@ async function startServer() {
         await (0, db_1.connectDatabase)();
         // Seed default data
         await (0, db_1.seedDatabase)();
-        server.listen(PORT, () => {
+        exports.server.listen(PORT, () => {
             console.log(`[Server] Express server listening on http://localhost:${PORT}`);
         });
     }
