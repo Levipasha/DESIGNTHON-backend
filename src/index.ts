@@ -8,50 +8,71 @@ import { connectDatabase, seedDatabase } from './config/db';
 
 dotenv.config();
 
-const allowedOrigins = process.env.FRONTEND_URL 
-  ? process.env.FRONTEND_URL.split(',').map((o: string) => o.trim()) 
-  : [
-      'http://localhost:3000', 
-      'http://127.0.0.1:3000', 
-      'http://localhost:5173', 
-      'http://localhost:5174', 
-      'https://designthon.skywebdev.xyz'
-    ];
+const defaultAllowedOrigins = [
+  'http://localhost:3000',
+  'http://127.0.0.1:3000',
+  'http://localhost:5173',
+  'http://localhost:5174',
+  'https://designthon.skywebdev.xyz',
+  'https://designathon.skywebdev.xyz',
+  'https://admin.designthon.skywebdev.xyz',
+  'https://admin.skywebdev.xyz'
+];
 
-const app = express();
-const server = http.createServer(app);
-const io = new Server(server, {
+export const checkCorsOrigin = (origin: string | undefined): boolean => {
+  if (!origin) return true;
+  const cleanOrigin = origin.replace(/\/+$/, '').toLowerCase();
+  
+  // Check default allowed list
+  if (defaultAllowedOrigins.some(o => o.toLowerCase() === cleanOrigin)) return true;
+
+  // Check env variable list
+  if (process.env.FRONTEND_URL) {
+    const envOrigins = process.env.FRONTEND_URL.split(',').map(o => o.trim().replace(/\/+$/, '').toLowerCase()).filter(Boolean);
+    if (envOrigins.includes(cleanOrigin)) return true;
+  }
+
+  // Allow any skywebdev.xyz subdomain (e.g. https://designthon.skywebdev.xyz, https://admin.skywebdev.xyz)
+  if (/^https?:\/\/([a-zA-Z0-9-]+\.)*skywebdev\.xyz(:[0-9]+)?$/.test(cleanOrigin)) {
+    return true;
+  }
+
+  // Allow any localhost / 127.0.0.1 port
+  if (/^https?:\/\/(localhost|127\.0\.0\.1)(:[0-9]+)?$/.test(cleanOrigin)) {
+    return true;
+  }
+
+  return false;
+};
+
+export const app = express();
+export const server = http.createServer(app);
+export const io = new Server(server, {
   cors: {
     origin: (origin, callback) => {
-      if (!origin) return callback(null, true);
-      if (process.env.FRONTEND_URL) {
-        if (allowedOrigins.indexOf(origin) !== -1) {
-          callback(null, true);
-        } else {
-          callback(new Error('Not allowed by CORS'));
-        }
-      } else {
+      if (checkCorsOrigin(origin)) {
         callback(null, true);
+      } else {
+        console.warn(`[Socket CORS] Origin rejected: ${origin}`);
+        callback(new Error('Not allowed by CORS'));
       }
     },
-    methods: ['GET', 'POST', 'PUT', 'DELETE'],
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     credentials: true
   }
 });
 
 app.use(cors({
   origin: (origin, callback) => {
-    if (!origin) return callback(null, true);
-    if (process.env.FRONTEND_URL) {
-      if (allowedOrigins.indexOf(origin) !== -1) {
-        callback(null, true);
-      } else {
-        callback(new Error('Not allowed by CORS'));
-      }
-    } else {
+    if (checkCorsOrigin(origin)) {
       callback(null, true);
+    } else {
+      console.warn(`[Express CORS] Origin rejected: ${origin}`);
+      callback(new Error(`CORS Error: Origin ${origin} not allowed`));
     }
   },
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
   credentials: true
 }));
 app.use(express.json());
@@ -118,6 +139,12 @@ io.on('connection', (socket) => {
     console.log(`[Socket] User disconnected: ${socket.id}`);
   });
 });
+
+export const broadcastEvent = (eventName: string, data?: any) => {
+  if (io) {
+    io.emit(eventName, data);
+  }
+};
 
 const PORT = process.env.PORT || 5000;
 

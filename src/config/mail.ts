@@ -33,7 +33,7 @@ export async function sendEmail(to: string, subject: string, html: string): Prom
 
   try {
     const info = await transporter.sendMail({
-      from: `"DESIGNTHON 2026" <${SMTP_USER}>`,
+      from: `"DESIGNATHON 2026" <${SMTP_USER}>`,
       to,
       subject,
       html,
@@ -205,13 +205,13 @@ export function getEmailTemplate(title: string, bodyContent: string): string {
             <div class="header">
               <div class="logo">D</div>
               <h2 class="title">${title}</h2>
-              <div class="subtitle">DESIGNTHON 2026</div>
+              <div class="subtitle">DESIGNATHON 2026</div>
             </div>
             <div class="content">
               ${bodyContent}
             </div>
             <div class="footer">
-              DESIGNTHON 2026 &bull; Hyderabad's Premier UI/UX Hackathon<br>
+              DESIGNATHON 2026 &bull; Hyderabad's Premier UI/UX Hackathon<br>
               Organized by SkyWeb &bull; cohort venue check-in opens Sept 12, 09:00 AM<br>
               <span style="color: #3f3f46; display: block; margin-top: 10px;">If you have any questions, reply to this email.</span>
             </div>

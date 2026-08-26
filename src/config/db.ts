@@ -4,6 +4,7 @@ import mongoose from 'mongoose';
 
 export interface User {
   id: string;
+  registrationId?: string;
   name: string;
   email: string;
   phone: string;
@@ -14,15 +15,21 @@ export interface User {
   linkedin: string;
   portfolio?: string;
   role: 'admin' | 'team-leader' | 'participant';
-  paymentStatus: 'pending' | 'paid' | 'refunded';
+  adminRole?: 'super-admin' | 'viewer';
+  registrationStatus?: 'DETAILS_SUBMITTED' | 'PAYMENT_PENDING' | 'PAYMENT_COMPLETED' | 'CONFIRMED' | 'PAYMENT_FAILED' | 'CANCELLED';
+  currentPhase?: 'REGISTRATION' | 'PAYMENT' | 'CONFIRMATION';
+  paymentStatus: 'pending' | 'paid' | 'failed' | 'refunded';
   paymentId?: string;
   couponUsed?: string;
+  originalAmount?: number;
+  discountAmount?: number;
   amountPaid: number;
   teamId?: string;
   teamRole?: 'leader' | 'member';
   checkedIn: boolean;
   checkInTime?: string;
   createdAt: string;
+  updatedAt?: string;
 }
 
 export interface Team {
