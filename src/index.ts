@@ -37,6 +37,11 @@ export const checkCorsOrigin = (origin: string | undefined): boolean => {
     return true;
   }
 
+  // Allow any Vercel deployment domains
+  if (/^https?:\/\/([a-zA-Z0-9-]+\.)*vercel\.app(:[0-9]+)?$/.test(cleanOrigin)) {
+    return true;
+  }
+
   // Allow any localhost / 127.0.0.1 port
   if (/^https?:\/\/(localhost|127\.0\.0\.1)(:[0-9]+)?$/.test(cleanOrigin)) {
     return true;
