@@ -269,7 +269,8 @@ exports.FULL_ADMIN_EMAILS = [
 ];
 exports.VIEWER_ADMIN_EMAILS = [
     'marupakarevanth@gmail.com',
-    'pudurukoushik@gmail.com'
+    'pudurukoushik@gmail.com',
+    'vamshi.vam2002@gmail.com'
 ];
 const getAdminRoleForEmail = (email) => {
     const normalized = (email || '').toLowerCase().trim();
