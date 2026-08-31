@@ -268,7 +268,8 @@ exports.FULL_ADMIN_EMAILS = [
     'admin@designthon.com'
 ];
 exports.VIEWER_ADMIN_EMAILS = [
-    'marupakarevanth@gmail.com'
+    'marupakarevanth@gmail.com',
+    'pudurukoushik@gmail.com'
 ];
 const getAdminRoleForEmail = (email) => {
     const normalized = (email || '').toLowerCase().trim();
