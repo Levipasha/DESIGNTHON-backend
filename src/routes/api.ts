@@ -297,7 +297,8 @@ export const FULL_ADMIN_EMAILS = [
 ];
 
 export const VIEWER_ADMIN_EMAILS = [
-  'marupakarevanth@gmail.com'
+  'marupakarevanth@gmail.com',
+  'pudurukoushik@gmail.com'
 ];
 
 export const getAdminRoleForEmail = (email: string): 'super-admin' | 'viewer' | null => {
