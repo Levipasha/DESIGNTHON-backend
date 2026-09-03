@@ -12,8 +12,9 @@ export interface User {
   branch: string;
   year: string;
   gender: string;
-  linkedin: string;
+  linkedin?: string;
   portfolio?: string;
+  accommodation?: 'yes' | 'no' | string;
   role: 'admin' | 'team-leader' | 'participant';
   adminRole?: 'super-admin' | 'viewer';
   registrationStatus?: 'DETAILS_SUBMITTED' | 'PAYMENT_PENDING' | 'PAYMENT_COMPLETED' | 'CONFIRMED' | 'PAYMENT_FAILED' | 'CANCELLED';

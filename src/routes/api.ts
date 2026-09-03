@@ -111,7 +111,7 @@ export const requireFullAdmin = async (req: AuthRequest, res: Response, next: Ne
 
 // Phase 1 Registration: Save Participant Details & Generate Registration ID
 router.post('/register/phase1', async (req: Request, res: Response) => {
-  const { name, email, phone, college, branch, year, gender, linkedin, portfolio } = req.body;
+  const { name, email, phone, college, branch, year, gender, linkedin, portfolio, accommodation } = req.body;
 
   // 1. Validate required fields
   if (!name || !name.trim()) {
@@ -136,9 +136,9 @@ router.post('/register/phase1', async (req: Request, res: Response) => {
   if (!gender || !gender.trim()) {
     return res.status(400).json({ message: 'Gender is required' });
   }
-  if (!linkedin || !linkedin.trim()) {
-    return res.status(400).json({ message: 'LinkedIn URL is required' });
-  }
+
+  const userAccommodation = accommodation === 'yes' ? 'yes' : 'no';
+  const basePrice = userAccommodation === 'yes' ? 999 : 649;
 
   const normalizedEmail = email.toLowerCase().trim();
   let user = await Users.findOne({ email: normalizedEmail });
@@ -166,11 +166,12 @@ router.post('/register/phase1', async (req: Request, res: Response) => {
       branch: branch.trim(),
       year: year.trim(),
       gender: gender.trim(),
-      linkedin: linkedin.trim(),
+      linkedin: linkedin ? linkedin.trim() : undefined,
       portfolio: portfolio ? portfolio.trim() : undefined,
+      accommodation: userAccommodation,
       registrationStatus: 'DETAILS_SUBMITTED',
       currentPhase: 'PAYMENT',
-      originalAmount: 1000,
+      originalAmount: basePrice,
       updatedAt: new Date().toISOString()
     });
 
@@ -187,13 +188,14 @@ router.post('/register/phase1', async (req: Request, res: Response) => {
       branch: branch.trim(),
       year: year.trim(),
       gender: gender.trim(),
-      linkedin: linkedin.trim(),
+      linkedin: linkedin ? linkedin.trim() : undefined,
       portfolio: portfolio ? portfolio.trim() : undefined,
+      accommodation: userAccommodation,
       role: 'participant',
       registrationStatus: 'DETAILS_SUBMITTED',
       currentPhase: 'PAYMENT',
       paymentStatus: 'pending',
-      originalAmount: 1000,
+      originalAmount: basePrice,
       discountAmount: 0,
       amountPaid: 0,
       checkedIn: false,
@@ -608,6 +610,7 @@ router.get('/public/participants', async (req: Request, res: Response) => {
     gender: u.gender,
     linkedin: u.linkedin,
     portfolio: u.portfolio,
+    accommodation: u.accommodation || 'no',
     teamId: u.teamId,
     teamName: u.teamId ? (teamsMap.get(u.teamId) || 'In Team') : undefined,
     teamRole: u.teamRole,
@@ -668,8 +671,12 @@ router.get('/public/teams/:id', async (req: Request, res: Response) => {
 
 // 1. Validate Coupon Code
 router.post('/coupons/validate', async (req: Request, res: Response) => {
-  const { code, college } = req.body;
+  const { code, college, accommodation } = req.body;
   
+  if (accommodation === 'no') {
+    return res.status(400).json({ valid: false, message: 'Coupons are not applicable for passes without accommodation.' });
+  }
+
   if (!code || !code.trim()) {
     return res.status(400).json({ valid: false, message: 'Coupon code is required' });
   }
@@ -699,7 +706,7 @@ router.post('/coupons/validate', async (req: Request, res: Response) => {
     }
   }
 
-  const basePrice = 1000;
+  const basePrice = 999;
   let discountAmount = 0;
 
   if (coupon.discountType === 'percentage') {
@@ -733,27 +740,32 @@ router.post('/payments/create-order', authenticateToken, async (req: AuthRequest
   const user = await Users.findOne({ id: userId });
   if (!user) return res.status(404).json({ message: 'User not found' });
 
+  const isWithAccommodation = user.accommodation === 'yes';
+  const basePrice = isWithAccommodation ? 999 : 649;
   let discountAmount = 0;
-  let finalAmount = typeof amount === 'number' ? amount : 1000;
+  let finalAmount = basePrice;
 
-  if (couponCode) {
+  // Coupons are ONLY permitted if accommodation is selected
+  if (isWithAccommodation && couponCode) {
     const coupon = await Coupons.findOne({ code: couponCode.toUpperCase().trim() });
     if (coupon && coupon.isActive && coupon.usageCount < coupon.usageLimit) {
       if (coupon.discountType === 'percentage') {
-        discountAmount = Math.round((1000 * coupon.discountValue) / 100);
+        discountAmount = Math.round((999 * coupon.discountValue) / 100);
       } else {
-        discountAmount = Math.min(1000, coupon.discountValue);
+        discountAmount = Math.min(999, coupon.discountValue);
       }
-      finalAmount = Math.max(0, 1000 - discountAmount);
+      finalAmount = Math.max(0, 999 - discountAmount);
     }
+  } else {
+    finalAmount = typeof amount === 'number' ? amount : basePrice;
   }
 
   // Update user state to PAYMENT_PENDING
   await Users.updateOne(user.id, {
     registrationStatus: 'PAYMENT_PENDING',
     currentPhase: 'PAYMENT',
-    couponUsed: couponCode || undefined,
-    originalAmount: 1000,
+    couponUsed: isWithAccommodation && couponCode ? couponCode : undefined,
+    originalAmount: basePrice,
     discountAmount,
     updatedAt: new Date().toISOString()
   });
@@ -837,21 +849,25 @@ router.post('/payments/verify', authenticateToken, async (req: AuthRequest, res:
   const user = await Users.findOne({ id: userId });
   if (!user) return res.status(404).json({ message: 'User not found' });
 
-  // Calculate discount & update coupon usage
+  const isWithAccommodation = user.accommodation === 'yes';
+  const basePrice = isWithAccommodation ? 999 : 649;
+
+  // Calculate discount & update coupon usage (only applicable with accommodation)
   let discountAmount = 0;
-  if (couponCode) {
+  let effectiveCoupon = isWithAccommodation ? couponCode : undefined;
+  if (isWithAccommodation && couponCode) {
     const coupon = await Coupons.findOne({ code: couponCode.toUpperCase().trim() });
     if (coupon) {
       if (coupon.discountType === 'percentage') {
-        discountAmount = Math.round((1000 * coupon.discountValue) / 100);
+        discountAmount = Math.round((999 * coupon.discountValue) / 100);
       } else {
-        discountAmount = Math.min(1000, coupon.discountValue);
+        discountAmount = Math.min(999, coupon.discountValue);
       }
       await Coupons.updateOne(coupon.id, { usageCount: coupon.usageCount + 1 });
     }
   }
 
-  const finalPaidAmount = typeof amount === 'number' ? amount : Math.max(0, 1000 - discountAmount);
+  const finalPaidAmount = typeof amount === 'number' ? amount : Math.max(0, basePrice - discountAmount);
 
   // Log the payment
   const paymentLog = await Payments.create({
@@ -862,7 +878,7 @@ router.post('/payments/verify', authenticateToken, async (req: AuthRequest, res:
     userEmail: user.email,
     amount: finalPaidAmount,
     status: 'success',
-    couponUsed: couponCode || undefined,
+    couponUsed: effectiveCoupon,
     createdAt: new Date().toISOString()
   });
 
@@ -872,9 +888,9 @@ router.post('/payments/verify', authenticateToken, async (req: AuthRequest, res:
     registrationStatus: 'CONFIRMED',
     currentPhase: 'CONFIRMATION',
     paymentId: paymentLog.razorpayPaymentId,
-    couponUsed: couponCode || undefined,
+    couponUsed: effectiveCoupon,
     discountAmount,
-    originalAmount: 1000,
+    originalAmount: basePrice,
     amountPaid: finalPaidAmount,
     updatedAt: new Date().toISOString()
   });
@@ -884,7 +900,7 @@ router.post('/payments/verify', authenticateToken, async (req: AuthRequest, res:
     recipientType: 'individual',
     recipientTarget: user.id,
     title: 'Payment Successful & Confirmed',
-    message: `Thank you, ${user.name}! Your payment of ₹${finalPaidAmount} has been processed successfully. Your registration ID is ${user.registrationId || user.id}.`,
+    message: `Thank you, ${user.name}! Your payment of ₹${finalPaidAmount} (${isWithAccommodation ? 'With Accommodation' : 'Without Accommodation'}) has been processed successfully. Your registration ID is ${user.registrationId || user.id}.`,
     type: 'success',
     readBy: [],
     createdAt: new Date().toISOString()
@@ -921,13 +937,17 @@ router.post('/payments/verify', authenticateToken, async (req: AuthRequest, res:
           <span class="ticket-value">${user.college}</span>
         </div>
         <div class="ticket-row">
+          <span class="ticket-label">Pass Type</span>
+          <span class="ticket-value">${isWithAccommodation ? 'Pass With Accommodation (₹999)' : 'Pass Without Accommodation (₹649)'}</span>
+        </div>
+        <div class="ticket-row">
           <span class="ticket-label">Transaction ID</span>
           <span class="ticket-value" style="font-family: monospace;">${paymentLog.razorpayPaymentId}</span>
         </div>
-        ${couponCode ? `
+        ${effectiveCoupon ? `
         <div class="ticket-row">
           <span class="ticket-label">Coupon Applied</span>
-          <span class="ticket-value">${couponCode} (-₹${discountAmount})</span>
+          <span class="ticket-value">${effectiveCoupon} (-₹${discountAmount})</span>
         </div>` : ''}
         <div class="ticket-row ticket-total">
           <span>Amount Paid</span>
@@ -969,6 +989,10 @@ router.post('/payments/verify-free', authenticateToken, async (req: AuthRequest,
   const user = await Users.findOne({ id: userId });
   if (!user) return res.status(404).json({ message: 'User not found' });
 
+  if (user.accommodation !== 'yes') {
+    return res.status(400).json({ message: 'Free coupons are only valid with accommodation option' });
+  }
+
   if (!couponCode) {
     return res.status(400).json({ message: 'Coupon code is required' });
   }
@@ -993,8 +1017,8 @@ router.post('/payments/verify-free', authenticateToken, async (req: AuthRequest,
     }
   }
 
-  // Validate that discount is truly 100% (or fixed 1000)
-  const isHundredPercent = (coupon.discountType === 'percentage' && coupon.discountValue >= 100) || (coupon.discountType === 'fixed' && coupon.discountValue >= 1000);
+  // Validate that discount is truly 100% (or fixed >= 999)
+  const isHundredPercent = (coupon.discountType === 'percentage' && coupon.discountValue >= 100) || (coupon.discountType === 'fixed' && coupon.discountValue >= 999);
   if (!isHundredPercent) {
     return res.status(400).json({ message: 'This coupon does not provide 100% discount' });
   }
@@ -1024,8 +1048,8 @@ router.post('/payments/verify-free', authenticateToken, async (req: AuthRequest,
     currentPhase: 'CONFIRMATION',
     paymentId: freePaymentId,
     couponUsed: coupon.code,
-    originalAmount: 1000,
-    discountAmount: 1000,
+    originalAmount: 999,
+    discountAmount: 999,
     amountPaid: 0,
     updatedAt: new Date().toISOString()
   });
@@ -1740,9 +1764,9 @@ router.get('/admin/export-csv', authenticateToken, requireAdmin, async (req: Req
   const users = await Users.find(isRealParticipant);
   
   // Create CSV format
-  const headers = 'ID,Name,Email,Phone,College,Branch,Year,PaymentStatus,AmountPaid,CheckedIn,RegistrationDate\n';
+  const headers = 'ID,Name,Email,Phone,College,Branch,Year,Accommodation,PaymentStatus,AmountPaid,CheckedIn,RegistrationDate\n';
   const rows = users.map(u => 
-    `"${u.id}","${u.name}","${u.email}","${u.phone}","${u.college}","${u.branch}","${u.year}","${u.paymentStatus}",${u.amountPaid},"${u.checkedIn ? 'Yes' : 'No'}","${u.createdAt}"`
+    `"${u.id}","${u.name}","${u.email}","${u.phone}","${u.college}","${u.branch}","${u.year}","${u.accommodation === 'yes' ? 'With Accommodation' : 'Without Accommodation'}","${u.paymentStatus}",${u.amountPaid},"${u.checkedIn ? 'Yes' : 'No'}","${u.createdAt}"`
   ).join('\n');
 
   res.setHeader('Content-Type', 'text/csv');
